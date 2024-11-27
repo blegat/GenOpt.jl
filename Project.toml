@@ -2,3 +2,9 @@ name = "GeneratorOptInterface"
 uuid = "f2c049d8-7489-4223-990c-4f1c121a4cde"
 authors = ["Benoît Legat <benoit.legat@gmail.com>"]
 version = "0.1.0"
+
+[deps]
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+
+[compat]
+JuMP = "1.23.5"
