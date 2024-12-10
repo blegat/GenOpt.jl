@@ -1,4 +1,4 @@
-name = "GeneratorOptInterface"
+name = "GenOpt"
 uuid = "f2c049d8-7489-4223-990c-4f1c121a4cde"
 authors = ["Benoît Legat <benoit.legat@gmail.com>"]
 version = "0.1.0"

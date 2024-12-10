@@ -1,8 +1,11 @@
-module GeneratorOptInterface
+#module GenOpt
 
 using JuMP
 model = Model()
 @variable(model, x)
+@variable(model, y[1:2])
+
+# MOI part
 
 struct Iterator
     length::Int
@@ -20,6 +23,21 @@ function values_at(it::Iterator, i)
     return it.values[(1 + it.length * (i - 1)):it.length * i]
 end
 
+struct IteratorIndex
+    iterator_index::Int
+    value_index::Int
+end
+
+struct IteratedFunction <: MOI.AbstractVectorFunction
+    func::MOI.ScalarNonlinearFunction
+    iterators::Vector{Iterator}
+end
+
+Base.copy(f::IteratedFunction) = IteratedFunction(copy(f.func), f.iterators)
+MOI.Utilities.is_canonical(f::IteratedFunction) = MOI.Utilities.is_canonical(f.func)
+
+# JuMP part
+
 struct IteratorValues{I}
     iterator::Iterator
     values::I
@@ -28,11 +46,6 @@ end
 struct IteratorInExpr
     iterator::Iterator
     index::Int
-end
-
-struct IteratorIndex
-    iterator_index::Int
-    value_index::Int
 end
 
 function Base.show(io::IO, i::IteratorInExpr)
@@ -79,17 +92,16 @@ struct IteratedExpr{V<:AbstractVariableRef} <: AbstractVector{JuMP.GenericNonlin
     iterators::Vector{Iterator}
 end
 
-struct IteratedFunction <: MOI.AbstractVectorFunction
-    func::MOI.ScalarNonlinearFunction
-    iterators::Vector{Iterator}
-end
-
-Base.copy(f::IteratedFunction) = IteratedFunction(copy(f.func), f.iterators)
-MOI.Utilities.is_canonical(f::IteratedFunction) = MOI.Utilities.is_canonical(f.func)
-
 function JuMP.moi_function(f::IteratedExpr)
     return IteratedFunction(
         JuMP.moi_function(f.expr),
+        f.iterators,
+    )
+end
+
+function JuMP.jump_function(model, f::IteratedFunction)
+    return IteratedExpr(
+        JuMP.jump_function(model, f.func),
         f.iterators,
     )
 end
@@ -197,4 +209,8 @@ end
 
 c = @constraint(model, [i in [:a, :b]], x + d1[i] >= d2[i], container = ParametrizedArray)
 
-end # module GeneratorOptInterface
+#end # module GenOpt
+
+f = MOI.ScalarNonlinearFunction(:getindex, [y, 2]);
+f. 
+x
