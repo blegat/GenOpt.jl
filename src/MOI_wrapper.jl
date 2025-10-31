@@ -1,3 +1,8 @@
+# Copyright (c) 2024: Benoît Legat and contributors
+#
+# Use of this source code is governed by an MIT-style license that can be found
+# in the LICENSE.md file or at https://opensource.org/licenses/MIT.
+
 import MathOptInterface as MOI
 
 """
@@ -26,6 +31,8 @@ struct IteratorIndex
     iterator_index::Int
     value_index::Int
 end
+
+Base.copy(i::IteratorIndex) = i
 
 struct IteratedFunction <: MOI.AbstractVectorFunction
     func::MOI.ScalarNonlinearFunction

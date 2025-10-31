@@ -53,6 +53,34 @@ struct IteratedExpr{V<:JuMP.AbstractVariableRef} <: AbstractVector{JuMP.GenericN
     iterators::Vector{Iterator}
 end
 
+function Base.show(io::IO, f::IteratedExpr)
+    return print(io, JuMP.function_string(MIME("text/plain"), f))
+end
+
+function Base.show(io::IO, mime::MIME"text/latex", f::IteratedExpr)
+    str = JuMP.function_string(mime, f)
+    str = JuMP._wrap_in_inline_math_mode(str)
+    return print(io, str)
+end
+
+function Base.show(io::IO, mime::MIME"text/plain", f::IteratedExpr)
+    str = JuMP.function_string(mime, f)
+    return print(io, str)
+end
+
+function Base.show(io::IO, ::MIME, f::IteratedExpr)
+    return show(io, MIME"text/plain"(), f)
+end
+
+function JuMP.function_string(mime, a::IteratedExpr)
+    str = JuMP.function_string(mime, a.expr)
+    for iter in a.iterators
+        str *= ", "
+        str *= string(iter)
+    end
+    return str
+end
+
 function JuMP.moi_function(f::IteratedExpr)
     return IteratedFunction(
         JuMP.moi_function(f.expr),
@@ -98,6 +126,10 @@ struct ParametrizedArray
     iterators
 end
 
+function Base.show(io::IO, mime::MIME"text/latex", a::ParametrizedArray)
+    return show(io, a)
+end
+
 function JuMP.Containers.container(
     f::Function,
     indices::JuMP.Containers.VectorizedProductIterator,
@@ -115,7 +147,7 @@ function collect_iterators!(iterators::Vector, func::IteratorInExpr)
 end
 
 function collect_iterators!(iterators::Vector, func::JuMP.GenericNonlinearExpr)
-    return GenericNonlinearExpr(
+    return JuMP.GenericNonlinearExpr(
         func.head,
         map(Base.Fix1(collect_iterators!, iterators), func.args)
     )
@@ -141,9 +173,9 @@ function JuMP.build_constraint(
         new_func -= MOI.constant(set)
         S = MOI.Utilities.vector_set_type(typeof(set))
         vector_set = S(length(new_func))
-        return build_constraint(error_fn, new_func, vector_set)
+        return JuMP.build_constraint(error_fn, new_func, vector_set)
     else
-        return build_constraint(error_fn, func, set)
+        return JuMP.build_constraint(error_fn, func, set)
     end
 end
 
@@ -155,13 +187,26 @@ struct IteratedConstraint{
     set::S
 end
 
-JuMP.shape(::IteratedConstraint) = VectorShape()
+JuMP.shape(::IteratedConstraint) = JuMP.VectorShape()
+
+JuMP.reshape_vector(f::IteratedExpr, ::JuMP.VectorShape) = f
 
 function JuMP.check_belongs_to_model(con::IteratedConstraint, model)
     return JuMP.check_belongs_to_model(con.func.expr, model)
 end
 
-
 function JuMP.build_constraint(::Function, expr::IteratedExpr, set::MOI.AbstractVectorSet)
     return IteratedConstraint(expr, set)
+end
+
+function JuMP.constraint_object(
+    con_ref::JuMP.ConstraintRef{
+        <:JuMP.AbstractModel,
+        MOI.ConstraintIndex{FuncType,SetType},
+    },
+) where {FuncType<:IteratedFunction,SetType<:MOI.AbstractVectorSet}
+    model = con_ref.model
+    f = MOI.get(model, MOI.ConstraintFunction(), con_ref)::FuncType
+    s = MOI.get(model, MOI.ConstraintSet(), con_ref)::SetType
+    return IteratedConstraint(JuMP.jump_function(model, f), s)
 end

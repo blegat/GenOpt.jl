@@ -1,22 +1,19 @@
-using JuMP, GenOpt
+# Copyright (c) 2024: Benoît Legat and contributors
+#
+# Use of this source code is governed by an MIT-style license that can be found
+# in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
-model = Model()
-@variable(model, x)
-@variable(model, y[1:2])
+using Test
 
-d1 = Dict(:a => -1, :b => 1)
-d2 = Dict(:a => π, :b => 0.0)
-
-i = GenOpt.iterator([:a, :b])
-
-d1[i]
-d2[i]
-
-
-x + d1[i] - d2[i]
-
-
-c = @constraint(model, [i in [:a, :b]], x + d1[i] >= d2[i], container = ParametrizedArray)
-
-f = MOI.ScalarNonlinearFunction(:getindex, [y, 2]);
-x
+files_to_exclude = ["runtests.jl"]
+for file in readdir(@__DIR__)
+    if isdir(joinpath(@__DIR__, file))
+        include(joinpath(@__DIR__, file, "runtests.jl"))
+    end
+    if !endswith(file, ".jl") || any(isequal(file), files_to_exclude)
+        continue
+    end
+    @testset "$(file)" begin
+        include(joinpath(@__DIR__, file))
+    end
+end
