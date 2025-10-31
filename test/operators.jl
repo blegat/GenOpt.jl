@@ -30,6 +30,21 @@ function test_getindex()
     _test_iterator(d2[i], Real[π, 0.0])
 end
 
+function test_univariate()
+    i = GenOpt.iterator([2, -3])
+    _test_iterator(+i, [2, -3])
+    _test_iterator(-i, [-2, 3])
+end
+
+function test_multivariate()
+    i = GenOpt.iterator([2, -3])
+    _test_iterator(i + 1, [3, -2])
+    _test_iterator(2 - i, [0, 5])
+    j = GenOpt.iterator([1, -1])
+    err = ErrorException("Operation between two iterators is not implemented yet")
+    @test_throws err i + j
+end
+
 end  # module
 
 TestOperators.runtests()
