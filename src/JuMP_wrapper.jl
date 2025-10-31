@@ -1,3 +1,9 @@
+# Copyright (c) 2024: Benoît Legat and contributors
+#
+# Use of this source code is governed by an MIT-style license that can be found
+# in the LICENSE.md file or at https://opensource.org/licenses/MIT.
+
+# TODO move to a package extension depending on JuMP
 import JuMP
 
 """
@@ -6,7 +12,7 @@ import JuMP
         index::Int
     end
 
-
+Iterator `iterator` with values at index `index`.
 """
 struct IteratorInExpr
     iterator::Iterator
