@@ -54,31 +54,31 @@ for f in _MULTIVARIATE_OPERATORS
     end
 end
 
-struct IteratedExpr{V<:JuMP.AbstractVariableRef} <: AbstractVector{JuMP.GenericNonlinearExpr{V}}
+struct ExprGenerator{V<:JuMP.AbstractVariableRef} <: AbstractVector{JuMP.GenericNonlinearExpr{V}}
     expr::JuMP.GenericNonlinearExpr{V}
     iterators::Vector{Iterator}
 end
 
-function Base.show(io::IO, f::IteratedExpr)
+function Base.show(io::IO, f::ExprGenerator)
     return print(io, JuMP.function_string(MIME("text/plain"), f))
 end
 
-function Base.show(io::IO, mime::MIME"text/latex", f::IteratedExpr)
+function Base.show(io::IO, mime::MIME"text/latex", f::ExprGenerator)
     str = JuMP.function_string(mime, f)
     str = JuMP._wrap_in_inline_math_mode(str)
     return print(io, str)
 end
 
-function Base.show(io::IO, mime::MIME"text/plain", f::IteratedExpr)
+function Base.show(io::IO, mime::MIME"text/plain", f::ExprGenerator)
     str = JuMP.function_string(mime, f)
     return print(io, str)
 end
 
-function Base.show(io::IO, ::MIME, f::IteratedExpr)
+function Base.show(io::IO, ::MIME, f::ExprGenerator)
     return show(io, MIME"text/plain"(), f)
 end
 
-function JuMP.function_string(mime, a::IteratedExpr)
+function JuMP.function_string(mime, a::ExprGenerator)
     str = JuMP.function_string(mime, a.expr)
     for iter in a.iterators
         str *= ", "
@@ -87,7 +87,7 @@ function JuMP.function_string(mime, a::IteratedExpr)
     return str
 end
 
-function JuMP.moi_function(f::IteratedExpr)
+function JuMP.moi_function(f::ExprGenerator)
     return IteratedFunction(
         JuMP.moi_function(f.expr),
         f.iterators,
@@ -95,17 +95,17 @@ function JuMP.moi_function(f::IteratedExpr)
 end
 
 function JuMP.jump_function(model, f::IteratedFunction)
-    return IteratedExpr(
+    return ExprGenerator(
         JuMP.jump_function(model, f.func),
         f.iterators,
     )
 end
 
-function Base.:-(expr::IteratedExpr, α::Number)
-    return IteratedExpr(expr.expr - α, expr.iterators)
+function Base.:-(expr::ExprGenerator, α::Number)
+    return ExprGenerator(expr.expr - α, expr.iterators)
 end
 
-_size(expr::IteratedExpr) = getfield.(expr.iterators, :length)
+_size(expr::ExprGenerator) = getfield.(expr.iterators, :length)
 
 index_iterators(::Vector, func, _) = func
 
@@ -120,19 +120,19 @@ function index_iterators(iterators::Vector, func::JuMP.GenericNonlinearExpr, ind
     )
 end
 
-function Base.getindex(expr::IteratedExpr, i::Integer)
+function Base.getindex(expr::ExprGenerator, i::Integer)
     idx = CartesianIndices(Base.OneTo.(_size(expr)))[i]
     return index_iterators(expr.iterators, expr.expr, idx)
 end
 
-Base.length(expr::IteratedExpr) = prod(_size(expr))
+Base.length(expr::ExprGenerator) = prod(_size(expr))
 
 struct ParametrizedArray
     constraint
     iterators
 end
 
-function Base.show(io::IO, mime::MIME"text/latex", a::ParametrizedArray)
+function Base.show(io::IO, ::MIME"text/latex", a::ParametrizedArray)
     return show(io, a)
 end
 
@@ -152,6 +152,12 @@ function collect_iterators!(iterators::Vector, func::IteratorInExpr)
     return IteratorIndex(length(iterators), func.index)
 end
 
+# We create `NonlinearExpr` containing iterators so we now have
+# to convert it back to `ExprGenerator` and infer the expression type
+# if we were to replace iterators by their values.
+# The downside of this approach is that we need type piracy in
+# `build_constraint` and this `collect_iterators` is type unstable
+# in its building of 
 function collect_iterators!(iterators::Vector, func::JuMP.GenericNonlinearExpr)
     return JuMP.GenericNonlinearExpr(
         func.head,
@@ -165,17 +171,18 @@ function collect_iterators(func::JuMP.GenericNonlinearExpr)
     if isempty(iterators)
         return func
     else
-        return IteratedExpr(new_func, iterators)
+        return ExprGenerator(new_func, iterators)
     end
 end
 
+# FIXME this is type piracy
 function JuMP.build_constraint(
     error_fn::Function,
     func::JuMP.GenericNonlinearExpr,
     set::MOI.Utilities.ScalarLinearSet,
 )
     new_func = collect_iterators(func)
-    if new_func isa IteratedExpr
+    if new_func isa ExprGenerator
         new_func -= MOI.constant(set)
         S = MOI.Utilities.vector_set_type(typeof(set))
         vector_set = S(length(new_func))
@@ -189,19 +196,19 @@ struct IteratedConstraint{
     V<:JuMP.GenericVariableRef,
     S<:MOI.AbstractVectorSet,
 } <: JuMP.AbstractConstraint
-    func::IteratedExpr{V}
+    func::ExprGenerator{V}
     set::S
 end
 
 JuMP.shape(::IteratedConstraint) = JuMP.VectorShape()
 
-JuMP.reshape_vector(f::IteratedExpr, ::JuMP.VectorShape) = f
+JuMP.reshape_vector(f::ExprGenerator, ::JuMP.VectorShape) = f
 
 function JuMP.check_belongs_to_model(con::IteratedConstraint, model)
     return JuMP.check_belongs_to_model(con.func.expr, model)
 end
 
-function JuMP.build_constraint(::Function, expr::IteratedExpr, set::MOI.AbstractVectorSet)
+function JuMP.build_constraint(::Function, expr::ExprGenerator, set::MOI.AbstractVectorSet)
     return IteratedConstraint(expr, set)
 end
 
