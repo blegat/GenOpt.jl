@@ -7,6 +7,7 @@ module TestOperators
 
 using Test
 using GenOpt
+import JuMP
 
 function runtests()
     for name in names(@__MODULE__; all = true)
@@ -21,7 +22,7 @@ end
 
 function _test_iterator(it, values)
     @test it isa IteratorValues
-    @test it.iterator.length == length(values)
+    @test it.iterators[1].length == length(values)
     @test it.values == values
 end
 
@@ -42,12 +43,17 @@ function test_univariate()
 end
 
 function test_multivariate()
-    i = GenOpt.iterator([2, -3])
+    i, j = GenOpt.iterators(([2, -3], [1, -1]))
     _test_iterator(i + 1, [3, -2])
     _test_iterator(2 - i, [0, 5])
-    j = GenOpt.iterator([1, -1])
-    err = ErrorException("Operation between two iterators is not implemented yet")
-    @test_throws err i + j
+    ij = i + j
+    @test ij isa GenOpt.ExprTemplate{Int,JuMP.VariableRef}
+    model = JuMP.Model()
+    JuMP.@variable(model, x)
+    ijx = ij + x
+    @test ijx isa GenOpt.ExprTemplate{JuMP.AffExpr,JuMP.VariableRef}
+    ijxx = ijx * x
+    @test ijxx isa GenOpt.ExprTemplate{JuMP.QuadExpr,JuMP.VariableRef}
 end
 
 end  # module

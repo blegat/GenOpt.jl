@@ -34,10 +34,10 @@ end
 
 Base.copy(i::IteratorIndex) = i
 
-struct IteratedFunction <: MOI.AbstractVectorFunction
+struct FunctionGenerator{F} <: MOI.AbstractVectorFunction
     func::MOI.ScalarNonlinearFunction
     iterators::Vector{Iterator}
 end
 
-Base.copy(f::IteratedFunction) = IteratedFunction(copy(f.func), f.iterators)
-MOI.Utilities.is_canonical(f::IteratedFunction) = MOI.Utilities.is_canonical(f.func)
+Base.copy(f::FunctionGenerator{F}) where {F} = FunctionGenerator{F}(copy(f.func), f.iterators)
+MOI.Utilities.is_canonical(f::FunctionGenerator) = MOI.Utilities.is_canonical(f.func)

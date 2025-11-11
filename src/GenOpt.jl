@@ -6,7 +6,6 @@
 module GenOpt
 
 include("MOI_wrapper.jl")
-include("operators.jl")
 include("JuMP_wrapper.jl")
 
 # Copied from JuMP.jl:
