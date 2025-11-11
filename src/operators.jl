@@ -16,7 +16,10 @@ struct ExprTemplate{E,V<:JuMP.AbstractVariableRef} <: JuMP.AbstractJuMPScalar
     iterators::Iterators
 end
 
-function ExprTemplate{E}(expr::JuMP.GenericNonlinearExpr{V}, iterators::Iterators) where {E,V}
+function ExprTemplate{E}(
+    expr::JuMP.GenericNonlinearExpr{V},
+    iterators::Iterators,
+) where {E,V}
     return ExprTemplate{E,V}(expr, iterators)
 end
 
@@ -126,16 +129,9 @@ function _multivariate(f, op, x, y)
         _variable_ref_type(y),
         JuMP.VariableRef, # FIXME needed if both are iterators
     )
-    nl = JuMP.GenericNonlinearExpr{V}(
-        op,
-        _expr(x),
-        _expr(y),
-    )
+    nl = JuMP.GenericNonlinearExpr{V}(op, _expr(x), _expr(y))
     E = JuMP._MA.promote_operation(f, _type(x), _type(y))
-    return ExprTemplate{E}(
-        nl,
-        _check_equal(_iterators(x), _iterators(y))
-    )
+    return ExprTemplate{E}(nl, _check_equal(_iterators(x), _iterators(y)))
 end
 
 # Multivariate operators

@@ -22,7 +22,10 @@ struct IteratorInExpr
 end
 
 function Base.show(io::IO, i::IteratorInExpr)
-    print(io, values_at(i.iterators[i.index.iterator_index], i.index.value_index))
+    print(
+        io,
+        values_at(i.iterators[i.index.iterator_index], i.index.value_index),
+    )
     print(io, "[i]")
     return
 end
@@ -31,7 +34,8 @@ JuMP._is_real(::Union{IteratorInExpr,IteratorIndex}) = true
 JuMP.moi_function(i::Union{IteratorInExpr,IteratorIndex}) = i
 JuMP.jump_function(_, i::Union{IteratorInExpr,IteratorIndex}) = i
 
-struct ExprGenerator{E,V<:JuMP.AbstractVariableRef} <: AbstractVector{JuMP.GenericNonlinearExpr{V}}
+struct ExprGenerator{E,V<:JuMP.AbstractVariableRef} <:
+       AbstractVector{JuMP.GenericNonlinearExpr{V}}
     expr::ExprTemplate{E,V}
 end
 
@@ -47,7 +51,7 @@ function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
         ExprTemplate{JuMP.jump_function_type(model, F)}(
             JuMP.jump_function(model, f.func),
             f.iterators,
-        )
+        ),
     )
 end
 
@@ -63,7 +67,7 @@ end
 function index_iterators(func::JuMP.GenericNonlinearExpr, index)
     return GenericNonlinearExpr(
         func.head,
-        map(Base.Fix2(index_iterators, index), func.args)
+        map(Base.Fix2(index_iterators, index), func.args),
     )
 end
 
@@ -75,8 +79,8 @@ end
 Base.length(expr::ExprGenerator) = prod(_size(expr))
 
 struct ParametrizedArray
-    constraint
-    iterators
+    constraint::Any
+    iterators::Any
 end
 
 function JuMP.Containers.container(
@@ -85,7 +89,7 @@ function JuMP.Containers.container(
     ::Type{ParametrizedArray},
 )
     its = iterators(indices.prod.iterators)
-    ParametrizedArray(f(its...), its)
+    return ParametrizedArray(f(its...), its)
 end
 
 function JuMP.build_constraint(
@@ -115,7 +119,11 @@ function JuMP.check_belongs_to_model(con::IteratedConstraint, model)
     return JuMP.check_belongs_to_model(con.func.expr, model)
 end
 
-function JuMP.build_constraint(::Function, expr::ExprGenerator, set::MOI.AbstractVectorSet)
+function JuMP.build_constraint(
+    ::Function,
+    expr::ExprGenerator,
+    set::MOI.AbstractVectorSet,
+)
     return IteratedConstraint(expr, set)
 end
 

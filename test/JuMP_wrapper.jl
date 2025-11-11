@@ -30,16 +30,25 @@ function test_container()
 
     keys = [:a, :b]
 
-    con_ref = @constraint(model, [i in keys], x + d1[i] >= d2[i], container = ParametrizedArray)
+    con_ref = @constraint(
+        model,
+        [i in keys],
+        x + d1[i] >= d2[i],
+        container = ParametrizedArray
+    )
     con = constraint_object(con_ref.constraint)
     @test con isa IteratedConstraint
     con_it_expr = jump_function(con)
     @test con_it_expr isa ExprGenerator
     con_expr = con_it_expr.expr
-    @test sprint(show, con_ref) == "ParametrizedArray(((x + (IteratorIndex(1, 1))) - (IteratorIndex(2, 2))) - 0.0, Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]), Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]) ∈ MathOptInterface.Nonnegatives(4), (iterator([:a, :b]),))"
-    @test sprint(show, MIME"text/latex"(), con_ref) == "ParametrizedArray(((x + (IteratorIndex(1, 1))) - (IteratorIndex(2, 2))) - 0.0, Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]), Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]) ∈ MathOptInterface.Nonnegatives(4), (iterator([:a, :b]),))"
-    @test sprint(show, con_expr) == "((x + (IteratorIndex(1, 1))) - (IteratorIndex(2, 2))) - 0.0"
-    @test sprint(show, MIME"text/latex"(), con_expr) == "\$ {\\left({\\left({x} + {\\left(IteratorIndex(1, 1)\\right)}\\right)} - {\\left(IteratorIndex(2, 2)\\right)}\\right)} - {0.0} \$"
+    @test sprint(show, con_ref) ==
+          "ParametrizedArray(((x + (IteratorIndex(1, 1))) - (IteratorIndex(2, 2))) - 0.0, Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]), Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]) ∈ MathOptInterface.Nonnegatives(4), (iterator([:a, :b]),))"
+    @test sprint(show, MIME"text/latex"(), con_ref) ==
+          "ParametrizedArray(((x + (IteratorIndex(1, 1))) - (IteratorIndex(2, 2))) - 0.0, Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]), Iterator(2, [-1.0, 1.0, 3.141592653589793, 0.0]) ∈ MathOptInterface.Nonnegatives(4), (iterator([:a, :b]),))"
+    @test sprint(show, con_expr) ==
+          "((x + (IteratorIndex(1, 1))) - (IteratorIndex(2, 2))) - 0.0"
+    @test sprint(show, MIME"text/latex"(), con_expr) ==
+          "\$ {\\left({\\left({x} + {\\left(IteratorIndex(1, 1)\\right)}\\right)} - {\\left(IteratorIndex(2, 2)\\right)}\\right)} - {0.0} \$"
 
     i = GenOpt.iterator(keys)
     expr = x + d1[i] - d2[i]

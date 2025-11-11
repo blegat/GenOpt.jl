@@ -33,13 +33,13 @@ function test_getindex()
     i = GenOpt.iterator([:a, :b])
 
     _test_iterator(d1[i], [-1, 1])
-    _test_iterator(d2[i], Real[π, 0.0])
+    return _test_iterator(d2[i], Real[π, 0.0])
 end
 
 function test_univariate()
     i = GenOpt.iterator([2, -3])
     _test_iterator(+i, [2, -3])
-    _test_iterator(-i, [-2, 3])
+    return _test_iterator(-i, [-2, 3])
 end
 
 function test_multivariate()

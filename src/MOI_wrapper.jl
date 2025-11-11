@@ -24,7 +24,7 @@ function num_values(it::Iterator)
 end
 
 function values_at(it::Iterator, i)
-    return it.values[(1 + it.length * (i - 1)):it.length * i]
+    return it.values[(1+it.length*(i-1)):(it.length*i)]
 end
 
 struct IteratorIndex
@@ -39,5 +39,9 @@ struct FunctionGenerator{F} <: MOI.AbstractVectorFunction
     iterators::Vector{Iterator}
 end
 
-Base.copy(f::FunctionGenerator{F}) where {F} = FunctionGenerator{F}(copy(f.func), f.iterators)
-MOI.Utilities.is_canonical(f::FunctionGenerator) = MOI.Utilities.is_canonical(f.func)
+function Base.copy(f::FunctionGenerator{F}) where {F}
+    return FunctionGenerator{F}(copy(f.func), f.iterators)
+end
+function MOI.Utilities.is_canonical(f::FunctionGenerator)
+    return MOI.Utilities.is_canonical(f.func)
+end

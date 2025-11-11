@@ -2,13 +2,21 @@ function Base.show(io::IO, f::Union{ExprGenerator,ExprTemplate})
     return print(io, JuMP.function_string(MIME("text/plain"), f))
 end
 
-function Base.show(io::IO, mime::MIME"text/latex", f::Union{ExprGenerator,ExprTemplate})
+function Base.show(
+    io::IO,
+    mime::MIME"text/latex",
+    f::Union{ExprGenerator,ExprTemplate},
+)
     str = JuMP.function_string(mime, f)
     str = JuMP._wrap_in_inline_math_mode(str)
     return print(io, str)
 end
 
-function Base.show(io::IO, mime::MIME"text/plain", f::Union{ExprGenerator,ExprTemplate})
+function Base.show(
+    io::IO,
+    mime::MIME"text/plain",
+    f::Union{ExprGenerator,ExprTemplate},
+)
     str = JuMP.function_string(mime, f)
     return print(io, str)
 end
