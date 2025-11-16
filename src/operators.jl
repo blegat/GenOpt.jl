@@ -10,6 +10,10 @@ const Iterators = Vector{Iterator}
         expr::JuMP.GenericNonlinearExpr{V}
         iterators::Vector{Iterator}
     end
+
+Represent a `JuMP.GenericNonlinearExpr` containing iterators.
+Thanks to this custom type, we can define a custom `JuMP.build_constraint` method
+to generate constraint of different types.
 """
 struct ExprTemplate{E,V<:JuMP.AbstractVariableRef} <: JuMP.AbstractJuMPScalar
     expr::JuMP.GenericNonlinearExpr{V}
@@ -24,6 +28,8 @@ function ExprTemplate{E}(
 end
 
 JuMP.variable_ref_type(::Type{ExprTemplate{E,V}}) where {E,V} = V
+
+JuMP.check_belongs_to_model(f::ExprTemplate, model) = JuMP.check_belongs_to_model(f.expr, model)
 
 """
     struct IteratorValues{I}
@@ -59,7 +65,7 @@ iterator([5, -5])
 """
 struct IteratorValues{I}
     iterators::Iterators
-    index::Int
+    index::IteratorIndex
     values::I
 end
 
@@ -71,50 +77,66 @@ function Base.show(io::IO, i::IteratorValues)
 end
 
 function iterators(axes)
-    iterators = [Iterator(length(axe)) for axe in axes]
-    return IteratorValues.(Ref(iterators), eachindex(axes), axes)
+    iterators = Iterator[Iterator(axe) for axe in axes]
+    return IteratorValues.(Ref(iterators), IteratorIndex.(eachindex(axes)), axes)
 end
 
 iterator(axe) = iterators([axe])[]
 
 function Base.getindex(d::Dict, i::IteratorValues)
-    return IteratorValues(i.iterators, i.index, [d[val] for val in i.values])
+    new_values = [d[val] for val in i.values]
+    i.iterators[i.index.value] = Iterator(new_values)
+    return IteratorValues(i.iterators, i.index, new_values)
 end
 
 # The following is intentionally kept close to JuMP/src/nlp_expr.jl
 const _ScalarWithIterator = Union{ExprTemplate,IteratorValues}
 
+function _univariate(f, op, x)
+    V = something(
+        _variable_ref_type(x),
+        JuMP.VariableRef, # FIXME needed if `x` is an iterator
+    )
+    nl = JuMP.GenericNonlinearExpr{V}(op, _expr(x))
+    E = JuMP._MA.promote_operation(f, _type(x))
+    return ExprTemplate{E}(nl, _iterators(x))
+end
+
 # Univariate operators
 for f in MOI.Nonlinear.DEFAULT_UNIVARIATE_OPERATORS
+    op = Meta.quot(f)
     if isdefined(Base, f)
         @eval function Base.$(f)(x::IteratorValues)
-            return IteratorValues(x.iterators, x.index, $(f).(x.values))
+            return _univariate($f, $op, x)
         end
         @eval function Base.$(f)(x::ExprTemplate)
-            return ExprTemplate($f(x.expr), x.iterators)
+            return _univariate($f, $op, x)
         end
     end
 end
 
 function prepare(it::IteratorValues)
-    append!(it.iterators[it.index].values, it.values)
-    index = IteratorIndex(it.index, num_values(it.iterators[it.index]))
-    return IteratorInExpr(it.iterators, index)
+    @assert it.values == it.iterators[it.index.value].values
+    return IteratorInExpr(it.iterators, it.index)
 end
 
 _expr(f::JuMP.AbstractJuMPScalar) = f
 _expr(it::IteratorValues) = prepare(it)
 _expr(f::ExprTemplate) = f.expr
+_expr(f::Number) = f
 
 _variable_ref_type(f::JuMP.AbstractJuMPScalar) = JuMP.variable_ref_type(f)
 _variable_ref_type(::IteratorValues) = nothing
+_variable_ref_type(::Number) = nothing
 
 _iterators(::JuMP.AbstractJuMPScalar) = nothing
 _iterators(it::_ScalarWithIterator) = it.iterators
+_iterators(::Number) = nothing
 
 _type(it::_ScalarWithIterator) = eltype(it.values)
 _type(::ExprTemplate{E}) where {E} = E
 _type(f::JuMP.AbstractJuMPScalar) = typeof(f)
+_type(f::Number) = typeof(f)
 
 _check_equal(it::Iterators, ::Nothing) = it
 _check_equal(::Nothing, it::Iterators) = it
@@ -139,10 +161,16 @@ for f in [:+, :-, :*, :^, :/, :atan, :min, :max]
     op = Meta.quot(f)
     @eval begin
         function Base.$(f)(x::IteratorValues, y::Number)
-            return IteratorValues(x.iterators, x.index, $(f).(x.values, y))
+            return _multivariate($f, $op, x, y)
         end
         function Base.$(f)(x::Number, y::IteratorValues)
-            return IteratorValues(y.iterators, y.index, $(f).(x, y.values))
+            return _multivariate($f, $op, x, y)
+        end
+        function Base.$(f)(x::ExprTemplate, y::Number)
+            return _multivariate($f, $op, x, y)
+        end
+        function Base.$(f)(x::Number, y::ExprTemplate)
+            return _multivariate($f, $op, x, y)
         end
         function Base.$(f)(x::_ScalarWithIterator, y::JuMP.AbstractJuMPScalar)
             return _multivariate($f, $op, x, y)

@@ -22,8 +22,15 @@ end
 
 function _test_iterator(it, values)
     @test it isa IteratorValues
-    @test it.iterators[1].length == length(values)
+    @test it.iterators[1].values == values
     @test it.values == values
+end
+
+function _test_template(et, values)
+    @test et isa ExprTemplate
+    for i in eachindex(values)
+        @test index_iterators(et.expr, (i,)) == values[i]
+    end
 end
 
 function test_getindex()
@@ -33,19 +40,21 @@ function test_getindex()
     i = GenOpt.iterator([:a, :b])
 
     _test_iterator(d1[i], [-1, 1])
-    return _test_iterator(d2[i], Real[π, 0.0])
+    _test_iterator(d2[i], Real[π, 0.0])
+    return
 end
 
 function test_univariate()
     i = GenOpt.iterator([2, -3])
-    _test_iterator(+i, [2, -3])
-    return _test_iterator(-i, [-2, 3])
+    _test_template(+i, [2, -3])
+    _test_template(-i, [-2, 3])
+    return
 end
 
 function test_multivariate()
     i, j = GenOpt.iterators(([2, -3], [1, -1]))
-    _test_iterator(i + 1, [3, -2])
-    _test_iterator(2 - i, [0, 5])
+    _test_template(i + 1, [3, -2])
+    _test_template(2 - i, [0, 5])
     ij = i + j
     @test ij isa GenOpt.ExprTemplate{Int,JuMP.VariableRef}
     model = JuMP.Model()

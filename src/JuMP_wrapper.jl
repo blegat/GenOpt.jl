@@ -10,25 +10,18 @@ include("operators.jl")
 
 """
     struct IteratorInExpr
-        iterator::Iterator
+        iterators::Iterators
         index::IteratorIndex
     end
 
-Iterator `iterator` with values at index `index`.
+Iterator `iterators[index.value]`.
 """
 struct IteratorInExpr
     iterators::Iterators
     index::IteratorIndex
 end
 
-function Base.show(io::IO, i::IteratorInExpr)
-    print(
-        io,
-        values_at(i.iterators[i.index.iterator_index], i.index.value_index),
-    )
-    print(io, "[i]")
-    return
-end
+Base.copy(it::IteratorInExpr) = it
 
 JuMP._is_real(::Union{IteratorInExpr,IteratorIndex}) = true
 JuMP.moi_function(i::Union{IteratorInExpr,IteratorIndex}) = i
@@ -55,20 +48,27 @@ function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
     )
 end
 
-_size(expr::ExprGenerator) = getfield.(expr.expr.iterators, :length)
+_size(expr::ExprGenerator) = length.(getfield.(expr.expr.iterators, :values))
 
 index_iterators(func, _) = func
 
 function index_iterators(func::IteratorInExpr, index)
     idx = func.index
-    return values_at(iterators[idx.iterator_index], idx.value_index)[index[idx.iterator_index]]
+    return func.iterators[idx.value].values[index[idx.value]]
 end
 
 function index_iterators(func::JuMP.GenericNonlinearExpr, index)
-    return GenericNonlinearExpr(
-        func.head,
-        map(Base.Fix2(index_iterators, index), func.args),
-    )
+    args = map(Base.Fix2(index_iterators, index), func.args)
+    if any(JuMP._has_variable_ref_type, args)
+        return JuMP.GenericNonlinearExpr(func.head, args)
+    else
+        registry = MOI.Nonlinear.OperatorRegistry()
+        if length(func.args) == 1
+            MOI.Nonlinear.eval_univariate_function(registry, func.head, args[])
+        else
+            MOI.Nonlinear.eval_multivariate_function(registry, func.head, args)
+        end
+    end
 end
 
 function Base.getindex(expr::ExprGenerator, i::Integer)
@@ -104,10 +104,11 @@ function JuMP.build_constraint(
 end
 
 struct IteratedConstraint{
+    E,
     V<:JuMP.GenericVariableRef,
     S<:MOI.AbstractVectorSet,
 } <: JuMP.AbstractConstraint
-    func::ExprGenerator{V}
+    func::ExprGenerator{E,V}
     set::S
 end
 

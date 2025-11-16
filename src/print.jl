@@ -1,3 +1,9 @@
+function Base.show(io::IO, i::IteratorInExpr)
+    print(io, i.iterators[i.index.value].values)
+    print(io, "[i]")
+    return
+end
+
 function Base.show(io::IO, f::Union{ExprGenerator,ExprTemplate})
     return print(io, JuMP.function_string(MIME("text/plain"), f))
 end
