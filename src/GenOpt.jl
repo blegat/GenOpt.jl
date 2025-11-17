@@ -7,6 +7,7 @@ module GenOpt
 
 include("MOI_wrapper.jl")
 include("JuMP_wrapper.jl")
+include("examodels.jl")
 
 # Copied from JuMP.jl:
 const _EXCLUDE_SYMBOLS = [Symbol(@__MODULE__), :eval, :include]

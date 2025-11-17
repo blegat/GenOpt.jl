@@ -5,6 +5,14 @@
 
 import MathOptInterface as MOI
 
+struct ContiguousArrayOfVariables{N} <: AbstractArray{MOI.VariableIndex,N}
+    offset::Int64
+    size::NTuple{N,Int64}
+end
+
+Base.copy(array::ContiguousArrayOfVariables) = array
+Base.size(array::ContiguousArrayOfVariables) = array.size
+
 """
     struct Iterator{T}
         values::Vector{T}
@@ -13,6 +21,8 @@ import MathOptInterface as MOI
 struct Iterator{T}
     values::Vector{T}
 end
+
+Iterator(values::AbstractArray) = Iterator(collect(values))
 
 struct IteratorIndex
     value::Int
@@ -30,4 +40,11 @@ function Base.copy(f::FunctionGenerator{F}) where {F}
 end
 function MOI.Utilities.is_canonical(f::FunctionGenerator)
     return MOI.Utilities.is_canonical(f.func)
+end
+function MOI.Utilities.map_indices(::MOI.Utilities.IndexMap, func::FunctionGenerator)
+    # TODO check it's identity
+    return func
+end
+function MOI.Utilities.is_coefficient_type(::Type{FunctionGenerator{E}}, ::Type{T}) where {E,T}
+    return MOI.Utilities.is_coefficient_type(E, T)
 end

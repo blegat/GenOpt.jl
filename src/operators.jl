@@ -27,6 +27,15 @@ function ExprTemplate{E}(
     return ExprTemplate{E,V}(expr, iterators)
 end
 
+function Base.convert(::Type{ExprTemplate{E,V}}, expr::ExprTemplate{F,V}) where {E,F,V}
+    return ExprTemplate{E,V}(expr.expr, expr.iterators)
+end
+
+# Workaround for MA.promote_operation
+function Base.zero(::Type{ExprTemplate{E,V}}) where {E,V}
+    return ExprTemplate{E}(zero(JuMP.GenericNonlinearExpr{V}), Iterator[])
+end
+
 JuMP.variable_ref_type(::Type{ExprTemplate{E,V}}) where {E,V} = V
 
 JuMP.check_belongs_to_model(f::ExprTemplate, model) = JuMP.check_belongs_to_model(f.expr, model)
@@ -63,31 +72,25 @@ julia> 2v + 1
 iterator([5, -5])
 ```
 """
-struct IteratorValues{I}
+struct IteratorValues
     iterators::Iterators
     index::IteratorIndex
-    values::I
+    value_index::Int
 end
 
 function Base.show(io::IO, i::IteratorValues)
     print(io, "iterator(")
-    print(io, i.values)
+    print(io, getindex.(i.iterators[i.index.value].values, i.value_index))
     print(io, ")")
     return
 end
 
 function iterators(axes)
-    iterators = Iterator[Iterator(axe) for axe in axes]
-    return IteratorValues.(Ref(iterators), IteratorIndex.(eachindex(axes)), axes)
+    iterators = Iterator[Iterator(tuple.(axe)) for axe in axes]
+    return IteratorValues.(Ref(iterators), IteratorIndex.(eachindex(axes)), 1)
 end
 
 iterator(axe) = iterators([axe])[]
-
-function Base.getindex(d::Dict, i::IteratorValues)
-    new_values = [d[val] for val in i.values]
-    i.iterators[i.index.value] = Iterator(new_values)
-    return IteratorValues(i.iterators, i.index, new_values)
-end
 
 # The following is intentionally kept close to JuMP/src/nlp_expr.jl
 const _ScalarWithIterator = Union{ExprTemplate,IteratorValues}
@@ -116,8 +119,7 @@ for f in MOI.Nonlinear.DEFAULT_UNIVARIATE_OPERATORS
 end
 
 function prepare(it::IteratorValues)
-    @assert it.values == it.iterators[it.index.value].values
-    return IteratorInExpr(it.iterators, it.index)
+    return JuMP.GenericNonlinearExpr{JuMP.VariableRef}(:getindex, Any[it.index, it.value_index])
 end
 
 _expr(f::JuMP.AbstractJuMPScalar) = f
@@ -133,7 +135,7 @@ _iterators(::JuMP.AbstractJuMPScalar) = nothing
 _iterators(it::_ScalarWithIterator) = it.iterators
 _iterators(::Number) = nothing
 
-_type(it::_ScalarWithIterator) = eltype(it.values)
+_type(it::IteratorValues) = eltype(it.iterators[it.index.value].values[it.value_index])
 _type(::ExprTemplate{E}) where {E} = E
 _type(f::JuMP.AbstractJuMPScalar) = typeof(f)
 _type(f::Number) = typeof(f)
@@ -141,7 +143,7 @@ _type(f::Number) = typeof(f)
 _check_equal(it::Iterators, ::Nothing) = it
 _check_equal(::Nothing, it::Iterators) = it
 function _check_equal(a::Iterators, b::Iterators)
-    @assert a === b
+    #@assert a === b # reenable, workaroudn for promote_operation
     return a
 end
 
@@ -154,6 +156,11 @@ function _multivariate(f, op, x, y)
     nl = JuMP.GenericNonlinearExpr{V}(op, _expr(x), _expr(y))
     E = JuMP._MA.promote_operation(f, _type(x), _type(y))
     return ExprTemplate{E}(nl, _check_equal(_iterators(x), _iterators(y)))
+end
+
+# TODO move to JuMP
+function JuMP._MA.promote_operation(::typeof(/), ::Type{JuMP.NonlinearExpr}, ::Type{JuMP.NonlinearExpr})
+    return JuMP.NonlinearExpr
 end
 
 # Multivariate operators
@@ -182,4 +189,53 @@ for f in [:+, :-, :*, :^, :/, :atan, :min, :max]
             return _multivariate($f, $op, x, y)
         end
     end
+end
+
+only_iterator(::Number) = nothing
+function only_iterator(expr::JuMP.GenericNonlinearExpr)
+    its = unique(filter(!isnothing, only_iterator.(expr.args)))
+    if isempty(its)
+        return
+    else
+        return its[]
+    end
+end
+
+_force_value(α::Number) = α
+_force_value(::IteratorIndex, v) = v
+
+function _force_value(expr::JuMP.GenericNonlinearExpr)
+    op(expr.head)(
+        (force_value(e) for e in expr.args)...
+    )
+end
+
+function force_value(t::ExprTemplate)
+    it = only_iterator(t.expr)
+    return _new_values(Base.Fix1(_force_value, t.expr), t.iterators, it)
+end
+
+function _new_values(f, iterators, index)
+    iterator = iterators[index.value]
+    iterators[index.value] = Iterator(map(iterator.values) do val
+        (val..., f(val))
+    end)
+    return IteratorValues(iterators, index, length(first(iterators[index.value].values)))
+end
+
+function _getindex(d, it::IteratorValues)
+    return _new_values(val -> d[val[it.value_index]], it.iterators, it.index)
+end
+
+Base.getindex(d::Dict, i::IteratorValues) = _getindex(d, i)
+Base.getindex(v::Array, i::IteratorValues) = _getindex(v, i)
+
+function Base.getindex(v::Array{V}, i::Integer, j::_ScalarWithIterator) where {V<:JuMP.AbstractVariableRef}
+    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), i, _expr(j))
+    return ExprTemplate{V}(nl, _iterators(j))
+end
+
+function Base.getindex(v::Array{V}, i::_ScalarWithIterator, j::Integer) where {V<:JuMP.AbstractVariableRef}
+    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i), j)
+    return ExprTemplate{V}(nl, _iterators(i))
 end
