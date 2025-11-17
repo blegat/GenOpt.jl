@@ -85,8 +85,16 @@ function Base.show(io::IO, i::IteratorValues)
     return
 end
 
+function _tuple(axe)
+    if axe[1] isa Tuple
+        return axe
+    else
+        return tuple.(axe)
+    end
+end
+
 function iterators(axes)
-    iterators = Iterator[Iterator(tuple.(axe)) for axe in axes]
+    iterators = Iterator[Iterator(_tuple(axe)) for axe in axes]
     return IteratorValues.(Ref(iterators), IteratorIndex.(eachindex(axes)), 1)
 end
 
@@ -135,7 +143,7 @@ _iterators(::JuMP.AbstractJuMPScalar) = nothing
 _iterators(it::_ScalarWithIterator) = it.iterators
 _iterators(::Number) = nothing
 
-_type(it::IteratorValues) = eltype(it.iterators[it.index.value].values[it.value_index])
+_type(it::IteratorValues) = typeof(first(it.iterators[it.index.value].values)[it.value_index])
 _type(::ExprTemplate{E}) where {E} = E
 _type(f::JuMP.AbstractJuMPScalar) = typeof(f)
 _type(f::Number) = typeof(f)
@@ -154,7 +162,13 @@ function _multivariate(f, op, x, y)
         JuMP.VariableRef, # FIXME needed if both are iterators
     )
     nl = JuMP.GenericNonlinearExpr{V}(op, _expr(x), _expr(y))
-    E = JuMP._MA.promote_operation(f, _type(x), _type(y))
+    if op == :^ && y == 1
+        E = _type(x)
+    elseif op == :^ && y == 2
+        E = JuMP._MA.promote_operation(*, _type(x), _type(x))
+    else
+        E = JuMP._MA.promote_operation(f, _type(x), _type(y))
+    end
     return ExprTemplate{E}(nl, _check_equal(_iterators(x), _iterators(y)))
 end
 
@@ -191,28 +205,61 @@ for f in [:+, :-, :*, :^, :/, :atan, :min, :max]
     end
 end
 
-only_iterator(::Number) = nothing
-function only_iterator(expr::JuMP.GenericNonlinearExpr)
-    its = unique(filter(!isnothing, only_iterator.(expr.args)))
-    if isempty(its)
-        return
+#only_iterator(::Number) = nothing
+#function only_iterator(expr::JuMP.GenericNonlinearExpr)
+#    its = unique(filter(!isnothing, only_iterator.(expr.args)))
+#    if isempty(its)
+#        return
+#    else
+#        return its[]
+#    end
+#end
+#
+#_force_value(α::Number) = α
+#_force_value(::IteratorIndex, v) = v
+#
+#function _force_value(expr::JuMP.GenericNonlinearExpr)
+#    op(expr.head)(
+#        (force_value(e) for e in expr.args)...
+#    )
+#end
+#
+#function force_value(t::ExprTemplate)
+#    it = only_iterator(t.expr)
+#    return _new_values(Base.Fix1(_force_value, t.expr), t.iterators, it)
+#end
+
+struct LazySum{E,V<:JuMP.AbstractVariableRef} <: JuMP.AbstractJuMPScalar
+    expr::JuMP.GenericNonlinearExpr{V}
+    iterators::Iterators
+end
+
+function LazySum(template::ExprTemplate{E,V}) where {E,V}
+    return LazySum{E,V}(template.expr, template.iterators)
+end
+
+JuMP._is_real(::LazySum) = true
+JuMP.variable_ref_type(s::LazySum) = JuMP.variable_ref_type(s.expr)
+function JuMP.check_belongs_to_model(s::LazySum, model::JuMP.AbstractModel)
+    return JuMP.check_belongs_to_model(s.expr, model)
+end
+
+function JuMP.moi_function(s::LazySum{E}) where {E}
+    return SumGenerator{JuMP.moi_function_type(E)}(JuMP.moi_function(s.expr), s.iterators)
+end
+
+_iterators(it::Base.Iterators.ProductIterator) = iterators(it.iterators)
+_iterators(it) = iterators((it,))
+
+function lazy_sum(gen::Base.Generator)
+    its = _iterators(gen.iter)
+    if gen.iter isa Base.Iterators.ProductIterator
+        template = gen.f(its)
     else
-        return its[]
+        template = gen.f(its[])
     end
-end
-
-_force_value(α::Number) = α
-_force_value(::IteratorIndex, v) = v
-
-function _force_value(expr::JuMP.GenericNonlinearExpr)
-    op(expr.head)(
-        (force_value(e) for e in expr.args)...
-    )
-end
-
-function force_value(t::ExprTemplate)
-    it = only_iterator(t.expr)
-    return _new_values(Base.Fix1(_force_value, t.expr), t.iterators, it)
+    @assert template.iterators === first(its).iterators
+    return LazySum(template)
 end
 
 function _new_values(f, iterators, index)
@@ -230,6 +277,11 @@ end
 Base.getindex(d::Dict, i::IteratorValues) = _getindex(d, i)
 Base.getindex(v::Array, i::IteratorValues) = _getindex(v, i)
 
+function Base.getindex(it::IteratorValues, i)
+    @assert it.value_index == 1 # FIXME
+    return IteratorValues(it.iterators, it.index, i)
+end
+
 function Base.getindex(v::Array{V}, i::Integer, j::_ScalarWithIterator) where {V<:JuMP.AbstractVariableRef}
     nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), i, _expr(j))
     return ExprTemplate{V}(nl, _iterators(j))
@@ -238,4 +290,9 @@ end
 function Base.getindex(v::Array{V}, i::_ScalarWithIterator, j::Integer) where {V<:JuMP.AbstractVariableRef}
     nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i), j)
     return ExprTemplate{V}(nl, _iterators(i))
+end
+
+function Base.getindex(v::Array{V}, i::_ScalarWithIterator, j::_ScalarWithIterator) where {V<:JuMP.AbstractVariableRef}
+    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i), _expr(j))
+    return ExprTemplate{V}(nl, _check_equal(_iterators(i), _iterators(j)))
 end

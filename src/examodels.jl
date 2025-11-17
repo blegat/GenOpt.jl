@@ -37,7 +37,10 @@ function update_bin!(bin, e, p)
     if _update_bin!(bin, e, p) # if update succeeded, return the original bin
         return bin
     else # if update has failed, return a new bin
-        return Bin(e, [p], bin)
+        if p isa Tuple
+            p = [p]
+        end
+        return Bin(e, p, bin)
     end
 end
 function _update_bin!(bin::Bin{E,P,I}, e, p) where {E,P,I}
@@ -223,9 +226,6 @@ function exagen(f::MOI.ScalarNonlinearFunction, offsets)
             for i in 3:length(f.args)
                 idx += cp[i-2] * (exagen(f.args[i], offsets) - 1)
             end
-            if v.offset == 36
-                @show idx
-            end
             return ExaModels.Var(idx)
         elseif v isa IteratorIndex
             @assert length(f.args) == 2
@@ -249,23 +249,32 @@ _lower_bounds(::MOI.Nonpositives, T) = typemin(T)
 _upper_bounds(::Union{MOI.Zeros,MOI.Nonpositives}, T) = zero(T)
 _upper_bounds(::MOI.Nonnegatives, T) = typemax(T)
 
+function _exagen(func::MOI.ScalarNonlinearFunction, iterators)
+    lengths = map(it -> length(first(it.values)), iterators)
+    if length(lengths) == 1 && lengths[] == 1
+        cs = nothing
+        pars = only.(iterators[].values)
+    else
+        cs = [0; cumsum(lengths)[1:end-1]]
+        pars = vec(map(Base.Iterators.ProductIterator(ntuple(i -> iterators[i].values, length(iterators)))) do I
+            reduce((i, j) -> tuple(i..., j...), I)
+        end)
+    end
+    expr = exagen(func, cs)
+    return expr, pars
+end
+
+function _exafy(func::SumGenerator, _)
+    return _exagen(func.func, func.iterators)
+end
+
 function copy_generator_constraints!(c, moim, cis, var_to_idx, con_to_idx, T)
     # FIXME we assume that `var_to_idx` is the identity
     for ci in cis
         func = MOI.get(moim, MOI.ConstraintFunction(), ci)
         set = MOI.get(moim, MOI.ConstraintSet(), ci)
-        lengths = map(it -> length(first(it.values)), func.iterators)
-        if length(lengths) == 1 && lengths[] == 1
-            cs = nothing
-            pars = only.(func.iterators[].values)
-        else
-            cs = [0; cumsum(lengths)[1:end-1]]
-            pars = vec(map(Base.Iterators.ProductIterator(ntuple(i -> func.iterators[i].values, length(func.iterators)))) do I
-                reduce((i, j) -> tuple(i..., j...), I)
-            end)
-        end
-        expr = exagen(func.func, cs)
         con_to_idx[ci] = c.ncon
+        expr, pars = _exagen(func.func, func.iterators)
         ExaModels.constraint(c, expr, pars; lcon = _lower_bounds(set, T), ucon = _upper_bounds(set, T))
     end
 end
@@ -770,6 +779,9 @@ function MOI.supports_constraint(
     ::Type{MOI.VariableIndex},
     ::Type{<:SUPPORTED_VAR_SET_TYPE},
 )
+    return true
+end
+function MOI.supports(::ExaOptimizer, ::MOI.ObjectiveSense)
     return true
 end
 function MOI.supports(::ExaOptimizer, ::MOI.ObjectiveFunction{<:SUPPORTED_FUNC_TYPE_WITH_VAR})

@@ -102,14 +102,22 @@ container = ParametrizedArray
     container = container,
 )
 
+ss = lazy_sum(R[j] * u[1, j] for j in 1:p)
+ss = lazy_sum(R[j] * (u[i, j]^2) for i in 1:N, j in 1:p)
+itr1 = [(i, j, d(i, j, N)) for i in 1:N, j in 1:n]
+itr2 = [(j, d(N + 1, j, N)) for j in 1:n]
 @objective(
     model,
     Min,
-    sum(0.5 * R[j] * (u[i, j]^2) for i in 1:N, j in 1:p) +
-    sum(0.5 * Q[j] * (x[i, j] - d(i, j, N))^2 for i in 1:N, j in 1:n) +
-    sum(0.5 * Qf[j] * (x[N+1, j] - d(N + 1, j, N))^2 for j in 1:n),
+    lazy_sum(0.5 * R[j] * (u[i, j]^2) for i in 1:N, j in 1:p) +
+    lazy_sum(0.5 * Q[it[2]] * (x[it[1], it[2]] - it[3])^2 for it in itr1) +
+    lazy_sum(0.5 * Qf[it[1]] * (x[N+1, it[1]] - it[2])^2 for it in itr2),
 )
 
 using NLPModelsIpopt
 set_optimizer(model, () -> GenOpt.ExaOptimizer(ipopt))
 optimize!(model)
+exa = unsafe_backend(model)
+exa
+value.(x)
+value.(u)

@@ -22,7 +22,7 @@ struct Iterator{T}
     values::Vector{T}
 end
 
-Iterator(values::AbstractArray) = Iterator(collect(values))
+Iterator(values::AbstractArray) = Iterator(vec(collect(values)))
 
 struct IteratorIndex
     value::Int
@@ -41,10 +41,25 @@ end
 function MOI.Utilities.is_canonical(f::FunctionGenerator)
     return MOI.Utilities.is_canonical(f.func)
 end
-function MOI.Utilities.map_indices(::MOI.Utilities.IndexMap, func::FunctionGenerator)
+function MOI.Utilities.is_coefficient_type(::Type{FunctionGenerator{E}}, ::Type{T}) where {E,T}
+    return MOI.Utilities.is_coefficient_type(E, T)
+end
+
+struct SumGenerator{F} <: MOI.AbstractScalarFunction
+    func::MOI.ScalarNonlinearFunction
+    iterators::Vector{Iterator} # Slight type instability, we don't have `Iterator{T}`
+end
+
+function Base.copy(f::SumGenerator{F}) where {F}
+    return SumGenerator{F}(copy(f.func), f.iterators)
+end
+
+function MOI.Utilities.map_indices(::MOI.Utilities.IndexMap, func::Union{FunctionGenerator,SumGenerator})
     # TODO check it's identity
     return func
 end
-function MOI.Utilities.is_coefficient_type(::Type{FunctionGenerator{E}}, ::Type{T}) where {E,T}
-    return MOI.Utilities.is_coefficient_type(E, T)
+
+function MOI.Utilities.map_indices(::Function, func::Union{FunctionGenerator,SumGenerator})
+    # TODO check it's identity
+    return func
 end
