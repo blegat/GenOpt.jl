@@ -42,13 +42,13 @@ function test_container()
     @test con_it_expr isa ExprGenerator
     con_expr = con_it_expr.expr.expr
     @test sprint(show, con_ref) ==
-          "ParametrizedArray(((x + getindex(IteratorIndex(1), 2.0)) - getindex(IteratorIndex(1), 3.0)) - 0.0, Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), IteratorValues[iterator([:a, :b])])"
+          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2.0)) - getindex($IteratorIndex(1), 3.0)) - 0.0, Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), IteratorValues[iterator([:a, :b])])"
     @test sprint(show, MIME"text/latex"(), con_ref) ==
-          "ParametrizedArray(((x + getindex(IteratorIndex(1), 2.0)) - getindex(IteratorIndex(1), 3.0)) - 0.0, Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), IteratorValues[iterator([:a, :b])])"
+          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2.0)) - getindex($IteratorIndex(1), 3.0)) - 0.0, Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), IteratorValues[iterator([:a, :b])])"
     @test sprint(show, con_expr) ==
-          "((x + getindex(IteratorIndex(1), 2.0)) - getindex(IteratorIndex(1), 3.0)) - 0.0"
+          "((x + getindex($IteratorIndex(1), 2.0)) - getindex($IteratorIndex(1), 3.0)) - 0.0"
     @test sprint(show, MIME"text/latex"(), con_expr) ==
-          "\$ {\\left({\\left({x} + {\\textsf{getindex}\\left({IteratorIndex(1)}, {2.0}\\right)}\\right)} - {\\textsf{getindex}\\left({IteratorIndex(1)}, {3.0}\\right)}\\right)} - {0.0} \$"
+          "\$ {\\left({\\left({x} + {\\textsf{getindex}\\left({$IteratorIndex(1)}, {2.0}\\right)}\\right)} - {\\textsf{getindex}\\left({$IteratorIndex(1)}, {3.0}\\right)}\\right)} - {0.0} \$"
 
     i = GenOpt.iterator(keys)
     expr = x + d1[i] - d2[i]
