@@ -1,7 +1,42 @@
-# GenOpt
+# GenOpt.jl
 
-Still very much a draft. I'll add more details later.
-When the user uses the container syntax to create constraints, MOI receives each constraint independently so ExaModels.jl has to recover the repeated structure. We discussed during the JuMP-dev hackathon of a way to communicate the repeated structure through MOI more explicitly and this PR is a POC the resulting design.
-As a byproduct, this also gives a solution for https://github.com/jump-dev/JuMP.jl/issues/1654 since the constraint will be expanded at the MOI level with a bridge from FunctionGenerator in Zeros to Scalar?Function in EqualTo (we need a way to know the scalar function type but that should be doable)
-We can also recover the pretty printing of containers that we had in JuMP v0.18.
-Started as https://github.com/jump-dev/JuMP.jl/pull/3890
+[![Build Status](https://github.com/blegat/GenOpt.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/blegat/GenOpt.jl/actions?query=workflow%3ACI)
+[![codecov](https://codecov.io/gh/blegat/GenOpt.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/blegat/GenOpt.jl)
+
+## License
+
+`GenOpt.jl` is licensed under the [MIT license](https://github.com/blegat/GenOpt.jl/blob/main/LICENSE.md).
+
+## Installation
+
+The package is not registered yet so to install `GenOpt` using `Pkg.add`, do:
+```julia
+import Pkg
+Pkg.add("https://github.com/blegat/GenOpt.jl")
+```
+
+## Use with JuMP
+
+To create a group of constraints, give `ParametrizedArray` as `container` keyword:
+```julia
+using GenOpt
+@constraint(
+    model,
+    [i in 1:n],
+    x[1, i] == x0[i],
+    container = ParametrizedArray,
+)
+```
+To a grouped sum, use `lazy_sum` as follows:
+```julia
+@objective(
+    model,
+    Min,
+    lazy_sum(0.5 * R[j] * (u[i, j]^2) for i in 1:N, j in 1:p),
+)
+```
+To solve it on GPU with ExaModels, use
+```julia
+set_optimizer(model, () -> GenOpt.ExaOptimizer(madnlp, CUDABackend()))
+optimize!(model)
+```
