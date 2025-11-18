@@ -1,5 +1,7 @@
 # Quadrotor tutorial of ExaModels translated to GenOpt
 # See https://exanauts.github.io/ExaModels.jl/stable/quad/
+# This example was used for the JuMP-dev 2025 presentation
+# https://jump.dev/meetings/jumpdev2025/
 
 N = 3
 

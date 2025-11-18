@@ -3,6 +3,11 @@
 [![Build Status](https://github.com/blegat/GenOpt.jl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/blegat/GenOpt.jl/actions?query=workflow%3ACI)
 [![codecov](https://codecov.io/gh/blegat/GenOpt.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/blegat/GenOpt.jl)
 
+Pack groups of similar constraints of sum of similar terms into lightweight generators.
+This representation can then be used by [ExaModels](https://github.com/exanauts/ExaModels.jl)
+to accelerate the Automatic Differentiation on GPU.
+See the [presentation at JuMP-dev 2025](https://jump.dev/meetings/jumpdev2025/).
+
 ## License
 
 `GenOpt.jl` is licensed under the [MIT license](https://github.com/blegat/GenOpt.jl/blob/main/LICENSE.md).
