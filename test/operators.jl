@@ -22,14 +22,13 @@ end
 
 function _test_iterator(it, values)
     @test it isa IteratorValues
-    @test it.iterators[1].values == values
-    @test it.values == values
+    @test getindex.(it.iterators[1].values, it.value_index) == values
 end
 
 function _test_template(et, values)
     @test et isa ExprTemplate
     for i in eachindex(values)
-        @test index_iterators(et.expr, (i,)) == values[i]
+        @test index_iterators(et.expr, (et.iterators[1].values[i],)) == values[i]
     end
 end
 

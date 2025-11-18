@@ -84,15 +84,16 @@ _size(expr::ExprGenerator) = length.(getfield.(expr.expr.iterators, :values))
 
 index_iterators(func, _) = func
 
-function index_iterators(func::IteratorInExpr, index)
-    idx = func.index
-    return func.iterators[idx.value].values[index[idx.value]]
+function index_iterators(index::IteratorIndex, values)
+    return values[index.value]
 end
 
-function index_iterators(func::JuMP.GenericNonlinearExpr, index)
-    args = map(Base.Fix2(index_iterators, index), func.args)
+function index_iterators(func::JuMP.GenericNonlinearExpr, values)
+    args = map(Base.Fix2(index_iterators, values), func.args)
     if any(JuMP._has_variable_ref_type, args)
         return JuMP.GenericNonlinearExpr(func.head, args)
+    elseif func.head == :getindex
+        return getindex(args...)
     else
         registry = MOI.Nonlinear.OperatorRegistry()
         if length(func.args) == 1
@@ -105,7 +106,8 @@ end
 
 function Base.getindex(expr::ExprGenerator, i::Integer)
     idx = CartesianIndices(Base.OneTo.(_size(expr)))[i]
-    return index_iterators(expr.expr.expr, idx)
+    values = [expr.iterators[i].values[idx[i]] for i in eachindex(expr.iterators)]
+    return index_iterators(expr.expr.expr, values)
 end
 
 Base.length(expr::ExprGenerator) = prod(_size(expr))

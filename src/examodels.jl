@@ -1,4 +1,13 @@
+# Copyright (c) 2023 Sungho Shin
+#
+# See licence file in ExaModels.jl
 # Inspired from ExaModels/ext/ExaModelsMOI.jl
+
+# Copyright (c) 2025: Benoît Legat and contributors
+#
+# Use of this source code is governed by an MIT-style license that can be found
+# in the LICENSE.md file or at https://opensource.org/licenses/MIT.
+
 
 import ExaModels
 
