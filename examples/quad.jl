@@ -1,5 +1,7 @@
+# Quadrotor tutorial of ExaModels translated to GenOpt
+# See https://exanauts.github.io/ExaModels.jl/stable/quad/
+
 N = 3
-backend = nothing
 
 n = 9
 p = 4
@@ -114,10 +116,8 @@ itr2 = [(j, d(N + 1, j, N)) for j in 1:n]
     lazy_sum(0.5 * Qf[it[1]] * (x[N+1, it[1]] - it[2])^2 for it in itr2),
 )
 
-using NLPModelsIpopt
-set_optimizer(model, () -> GenOpt.ExaOptimizer(ipopt))
+using MadNLP
+set_optimizer(model, () -> GenOpt.ExaOptimizer(madnlp))
 optimize!(model)
-exa = unsafe_backend(model)
-exa
 value.(x)
 value.(u)
