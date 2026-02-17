@@ -14,10 +14,10 @@ See the [presentation at JuMP-dev 2025](https://jump.dev/meetings/jumpdev2025/).
 
 ## Installation
 
-The package is not registered yet so to install `GenOpt` using `Pkg.add`, do:
+Install GenOpt as follows:
 ```julia
 import Pkg
-Pkg.add("https://github.com/blegat/GenOpt.jl")
+Pkg.add("GenOpt")
 ```
 
 ## Use with JuMP
