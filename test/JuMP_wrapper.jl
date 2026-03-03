@@ -44,7 +44,7 @@ function test_container()
     @test sprint(show, con_ref) ==
           "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0, $Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), $IteratorValues[iterator([:a, :b])])"
     @test sprint(show, MIME"text/latex"(), con_ref) ==
-          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 00, $Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), $IteratorValues[iterator([:a, :b])])"
+          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0, $Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), $IteratorValues[iterator([:a, :b])])"
     @test sprint(show, con_expr) ==
           "((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0"
     @test sprint(show, MIME"text/latex"(), con_expr) ==
