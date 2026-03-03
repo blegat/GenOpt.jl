@@ -41,7 +41,10 @@ end
 function MOI.Utilities.is_canonical(f::FunctionGenerator)
     return MOI.Utilities.is_canonical(f.func)
 end
-function MOI.Utilities.is_coefficient_type(::Type{FunctionGenerator{E}}, ::Type{T}) where {E,T}
+function MOI.Utilities.is_coefficient_type(
+    ::Type{FunctionGenerator{E}},
+    ::Type{T},
+) where {E,T}
     return MOI.Utilities.is_coefficient_type(E, T)
 end
 
@@ -54,12 +57,18 @@ function Base.copy(f::SumGenerator{F}) where {F}
     return SumGenerator{F}(copy(f.func), f.iterators)
 end
 
-function MOI.Utilities.map_indices(::MOI.Utilities.IndexMap, func::Union{FunctionGenerator,SumGenerator})
+function MOI.Utilities.map_indices(
+    ::MOI.Utilities.IndexMap,
+    func::Union{FunctionGenerator,SumGenerator},
+)
     # TODO check it's identity
     return func
 end
 
-function MOI.Utilities.map_indices(::Function, func::Union{FunctionGenerator,SumGenerator})
+function MOI.Utilities.map_indices(
+    ::Function,
+    func::Union{FunctionGenerator,SumGenerator},
+)
     # TODO check it's identity
     return func
 end

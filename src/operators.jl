@@ -27,7 +27,10 @@ function ExprTemplate{E}(
     return ExprTemplate{E,V}(expr, iterators)
 end
 
-function Base.convert(::Type{ExprTemplate{E,V}}, expr::ExprTemplate{F,V}) where {E,F,V}
+function Base.convert(
+    ::Type{ExprTemplate{E,V}},
+    expr::ExprTemplate{F,V},
+) where {E,F,V}
     return ExprTemplate{E,V}(expr.expr, expr.iterators)
 end
 
@@ -38,7 +41,9 @@ end
 
 JuMP.variable_ref_type(::Type{ExprTemplate{E,V}}) where {E,V} = V
 
-JuMP.check_belongs_to_model(f::ExprTemplate, model) = JuMP.check_belongs_to_model(f.expr, model)
+function JuMP.check_belongs_to_model(f::ExprTemplate, model)
+    return JuMP.check_belongs_to_model(f.expr, model)
+end
 
 """
     struct IteratorValues{I}
@@ -127,7 +132,10 @@ for f in MOI.Nonlinear.DEFAULT_UNIVARIATE_OPERATORS
 end
 
 function prepare(it::IteratorValues)
-    return JuMP.GenericNonlinearExpr{JuMP.VariableRef}(:getindex, Any[it.index, it.value_index])
+    return JuMP.GenericNonlinearExpr{JuMP.VariableRef}(
+        :getindex,
+        Any[it.index, it.value_index],
+    )
 end
 
 _expr(f::JuMP.AbstractJuMPScalar) = f
@@ -143,7 +151,9 @@ _iterators(::JuMP.AbstractJuMPScalar) = nothing
 _iterators(it::_ScalarWithIterator) = it.iterators
 _iterators(::Number) = nothing
 
-_type(it::IteratorValues) = typeof(first(it.iterators[it.index.value].values)[it.value_index])
+function _type(it::IteratorValues)
+    return typeof(first(it.iterators[it.index.value].values)[it.value_index])
+end
 _type(::ExprTemplate{E}) where {E} = E
 _type(f::JuMP.AbstractJuMPScalar) = typeof(f)
 _type(f::Number) = typeof(f)
@@ -173,7 +183,11 @@ function _multivariate(f, op, x, y)
 end
 
 # TODO move to JuMP
-function JuMP._MA.promote_operation(::typeof(/), ::Type{JuMP.NonlinearExpr}, ::Type{JuMP.NonlinearExpr})
+function JuMP._MA.promote_operation(
+    ::typeof(/),
+    ::Type{JuMP.NonlinearExpr},
+    ::Type{JuMP.NonlinearExpr},
+)
     return JuMP.NonlinearExpr
 end
 
@@ -245,7 +259,10 @@ function JuMP.check_belongs_to_model(s::LazySum, model::JuMP.AbstractModel)
 end
 
 function JuMP.moi_function(s::LazySum{E}) where {E}
-    return SumGenerator{JuMP.moi_function_type(E)}(JuMP.moi_function(s.expr), s.iterators)
+    return SumGenerator{JuMP.moi_function_type(E)}(
+        JuMP.moi_function(s.expr),
+        s.iterators,
+    )
 end
 
 _iterators(it::Base.Iterators.ProductIterator) = iterators(it.iterators)
@@ -265,9 +282,13 @@ end
 function _new_values(f, iterators, index)
     iterator = iterators[index.value]
     iterators[index.value] = Iterator(map(iterator.values) do val
-        (val..., f(val))
+        return (val..., f(val))
     end)
-    return IteratorValues(iterators, index, length(first(iterators[index.value].values)))
+    return IteratorValues(
+        iterators,
+        index,
+        length(first(iterators[index.value].values)),
+    )
 end
 
 function _getindex(d, it::IteratorValues)
@@ -282,17 +303,34 @@ function Base.getindex(it::IteratorValues, i)
     return IteratorValues(it.iterators, it.index, i)
 end
 
-function Base.getindex(v::Array{V}, i::Integer, j::_ScalarWithIterator) where {V<:JuMP.AbstractVariableRef}
+function Base.getindex(
+    v::Array{V},
+    i::Integer,
+    j::_ScalarWithIterator,
+) where {V<:JuMP.AbstractVariableRef}
     nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), i, _expr(j))
     return ExprTemplate{V}(nl, _iterators(j))
 end
 
-function Base.getindex(v::Array{V}, i::_ScalarWithIterator, j::Integer) where {V<:JuMP.AbstractVariableRef}
+function Base.getindex(
+    v::Array{V},
+    i::_ScalarWithIterator,
+    j::Integer,
+) where {V<:JuMP.AbstractVariableRef}
     nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i), j)
     return ExprTemplate{V}(nl, _iterators(i))
 end
 
-function Base.getindex(v::Array{V}, i::_ScalarWithIterator, j::_ScalarWithIterator) where {V<:JuMP.AbstractVariableRef}
-    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i), _expr(j))
+function Base.getindex(
+    v::Array{V},
+    i::_ScalarWithIterator,
+    j::_ScalarWithIterator,
+) where {V<:JuMP.AbstractVariableRef}
+    nl = JuMP.GenericNonlinearExpr{V}(
+        :getindex,
+        to_generator(v),
+        _expr(i),
+        _expr(j),
+    )
     return ExprTemplate{V}(nl, _check_equal(_iterators(i), _iterators(j)))
 end

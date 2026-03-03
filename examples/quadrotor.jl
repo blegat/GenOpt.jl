@@ -7,10 +7,11 @@ N = 3
 
 n = 9
 p = 4
-d(i, j, N) =
-    (j == 1 ? 1 * sin(2 * pi / N * i) : 0.0) +
-    (j == 3 ? 2 * sin(4 * pi / N * i) : 0.0) +
-    (j == 5 ? 2 * i / N : 0.0)
+function d(i, j, N)
+    return (j == 1 ? 1 * sin(2 * pi / N * i) : 0.0) +
+           (j == 3 ? 2 * sin(4 * pi / N * i) : 0.0) +
+           (j == 5 ? 2 * i / N : 0.0)
+end
 dt = 1/N
 R = fill(1 / 10, 4)
 Q = [1, 0, 1, 0, 1, 0, 1, 1, 1]
@@ -27,12 +28,7 @@ model = Model()
 using GenOpt
 container = ParametrizedArray
 
-@constraint(
-    model,
-    [i in 1:n],
-    x[1, i] == x0[i],
-    container = container,
-)
+@constraint(model, [i in 1:n], x[1, i] == x0[i], container = container,)
 @constraint(
     model,
     [i in 1:N],
@@ -84,13 +80,17 @@ container = ParametrizedArray
     [i in 1:N],
     x[i+1, 7] ==
     x[i, 7] +
-    (u[i, 2] * cos(x[i, 7]) / cos(x[i, 8]) + u[i, 3] * sin(x[i, 7]) / cos(x[i, 8])) * dt,
+    (
+        u[i, 2] * cos(x[i, 7]) / cos(x[i, 8]) +
+        u[i, 3] * sin(x[i, 7]) / cos(x[i, 8])
+    ) * dt,
     container = container,
 )
 @constraint(
     model,
     [i in 1:N],
-    x[i+1, 8] == x[i, 8] + (-u[i, 2] * sin(x[i, 7]) + u[i, 3] * cos(x[i, 7])) * dt,
+    x[i+1, 8] ==
+    x[i, 8] + (-u[i, 2] * sin(x[i, 7]) + u[i, 3] * cos(x[i, 7])) * dt,
     container = container,
 )
 @constraint(
