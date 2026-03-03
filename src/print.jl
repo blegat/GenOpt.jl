@@ -65,7 +65,7 @@ function Base.show(io::IO, ::MIME"text/latex", a::ParametrizedArray)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", v::ArrayOfVariables)
-    println(io, Base.summary(v), " with offset ", v.offset)
+    return println(io, Base.summary(v), " with offset ", v.offset)
 end
 
 function Base.show(io::IO, v::ArrayOfVariables)

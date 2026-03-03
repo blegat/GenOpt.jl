@@ -28,7 +28,8 @@ end
 function _test_template(et, values)
     @test et isa ExprTemplate
     for i in eachindex(values)
-        @test index_iterators(et.expr, (et.iterators[1].values[i],)) == values[i]
+        @test index_iterators(et.expr, (et.iterators[1].values[i],)) ==
+              values[i]
     end
 end
 

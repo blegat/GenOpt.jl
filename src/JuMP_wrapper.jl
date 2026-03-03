@@ -35,17 +35,26 @@ end
 
 Base.size(array::ArrayOfVariables) = array.size
 function Base.getindex(A::ArrayOfVariables{T}, I...) where {T}
-    index = A.offset + Base._to_linear_index(Base.CartesianIndices(A.size), I...)
+    index =
+        A.offset + Base._to_linear_index(Base.CartesianIndices(A.size), I...)
     return JuMP.GenericVariableRef{T}(A.model, MOI.VariableIndex(index))
 end
 
 JuMP._is_real(::ArrayOfVariables) = true
-JuMP.moi_function(array::ArrayOfVariables) = ContiguousArrayOfVariables(array.offset, array.size)
-function JuMP.jump_function(model::JuMP.GenericModel{T}, array::ContiguousArrayOfVariables{N}) where {T,N}
+function JuMP.moi_function(array::ArrayOfVariables)
+    return ContiguousArrayOfVariables(array.offset, array.size)
+end
+function JuMP.jump_function(
+    model::JuMP.GenericModel{T},
+    array::ContiguousArrayOfVariables{N},
+) where {T,N}
     return ArrayOfVariables{T,N}(model, array.offset, array.size)
 end
 
-function Base.convert(::Type{ArrayOfVariables{T,N}}, array::Array{JuMP.GenericVariableRef{T},N}) where {T,N}
+function Base.convert(
+    ::Type{ArrayOfVariables{T,N}},
+    array::Array{JuMP.GenericVariableRef{T},N},
+) where {T,N}
     model = JuMP.owner_model(array[1])
     offset = JuMP.index(array[1]).value - 1
     for i in eachindex(array)
@@ -106,7 +115,8 @@ end
 
 function Base.getindex(expr::ExprGenerator, i::Integer)
     idx = CartesianIndices(Base.OneTo.(_size(expr)))[i]
-    values = [expr.iterators[i].values[idx[i]] for i in eachindex(expr.iterators)]
+    values =
+        [expr.iterators[i].values[idx[i]] for i in eachindex(expr.iterators)]
     return index_iterators(expr.expr.expr, values)
 end
 
