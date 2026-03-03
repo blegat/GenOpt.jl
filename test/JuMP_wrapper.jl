@@ -48,7 +48,7 @@ function test_container()
     @test sprint(show, con_expr) ==
           "((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0"
     @test sprint(show, MIME"text/latex"(), con_expr) ==
-          "\$ {\\left({\\left({x} + {\\textsf{getindex}\\left({$IteratorIndex(1)}, {2}\\right)}\\right)} - {\\textsf{getindex}\\left({$IteratorIndex(1)}, {3.0}\\right)}\\right)} - {0} \$"
+          "\$ {\\left({\\left({x} + {\\textsf{getindex}\\left({$IteratorIndex(1)}, {2}\\right)}\\right)} - {\\textsf{getindex}\\left({$IteratorIndex(1)}, {3}\\right)}\\right)} - {0} \$"
 
     i = GenOpt.iterator(keys)
     expr = x + d1[i] - d2[i]
