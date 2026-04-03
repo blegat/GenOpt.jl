@@ -15,19 +15,17 @@ from the iterators for each combination and converts each expanded expression
 to the type `F` declared by the `FunctionGenerator{F}` type parameter.
 If the expanded expression cannot be converted to `F`, an error is thrown.
 """
-struct FunctionGeneratorBridge{T,F,S,VS<:MOI.Utilities.VectorLinearSet} <:
-       MOI.Bridges.Constraint.AbstractBridge
+struct FunctionGeneratorBridge{T,F,S} <: MOI.Bridges.Constraint.AbstractBridge
     constraints::Vector{MOI.ConstraintIndex{F,S}}
     func::FunctionGenerator{F}
-    set::VS
 end
 
 function MOI.Bridges.Constraint.bridge_constraint(
-    ::Type{FunctionGeneratorBridge{T,F,S,VS}},
+    ::Type{FunctionGeneratorBridge{T,F,S}},
     model::MOI.ModelLike,
     func::FunctionGenerator{F},
-    set::VS,
-) where {T,F,S,VS<:MOI.Utilities.VectorLinearSet}
+    set::MOI.Utilities.VectorLinearSet,
+) where {T,F,S}
     scalar_set = S(zero(T))
     constraints = MOI.ConstraintIndex{F,S}[]
     sizes = Tuple(length.(func.iterators))
@@ -44,7 +42,7 @@ function MOI.Bridges.Constraint.bridge_constraint(
         )
         push!(constraints, ci)
     end
-    return FunctionGeneratorBridge{T,F,S,VS}(constraints, func, set)
+    return FunctionGeneratorBridge{T,F,S}(constraints, func, set)
 end
 
 function MOI.supports_constraint(
@@ -61,7 +59,7 @@ function MOI.Bridges.Constraint.concrete_bridge_type(
     VS::Type{<:MOI.Utilities.VectorLinearSet},
 ) where {T,F}
     S = MOI.Utilities.scalar_set_type(VS, T)
-    return FunctionGeneratorBridge{T,F,S,VS}
+    return FunctionGeneratorBridge{T,F,S}
 end
 
 function MOI.Bridges.added_constraint_types(
@@ -103,7 +101,10 @@ function MOI.get(
     ::MOI.ConstraintSet,
     bridge::FunctionGeneratorBridge,
 )
-    return bridge.set
+    return MOI.Utilities.set_with_dimension(
+        MOI.Utilities.vector_set_type(S),
+        length(bridge.constraints),
+    )
 end
 
 function MOI.delete(model::MOI.ModelLike, bridge::FunctionGeneratorBridge)
