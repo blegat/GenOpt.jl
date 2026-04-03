@@ -167,7 +167,12 @@ end
 
 # --- Conversion from expanded ScalarNonlinearFunction to target type F ---
 
-_convert(::Type{MOI.ScalarNonlinearFunction}, expr::MOI.ScalarNonlinearFunction) = expr
+function _convert(
+    ::Type{MOI.ScalarNonlinearFunction},
+    expr::MOI.ScalarNonlinearFunction,
+)
+    return expr
+end
 _convert(::Type{F}, expr::F) where {F} = expr
 
 function _convert(
