@@ -61,7 +61,7 @@ function test_runtests_simple()
             )
             iterators = [GenOpt.Iterator([1, 2, 3])]
             func_gen =
-                GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+                GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
                     template,
                     iterators,
                 )
@@ -103,7 +103,7 @@ function test_runtests_equality()
             )
             iterators = [GenOpt.Iterator([1, 2])]
             func_gen =
-                GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+                GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
                     template,
                     iterators,
                 )
@@ -156,7 +156,7 @@ function test_runtests_consecutive()
             )
             iterators = [GenOpt.Iterator([1, 2])]
             func_gen =
-                GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+                GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
                     template,
                     iterators,
                 )
@@ -217,11 +217,11 @@ function test_expand_with_variable_in_expr()
     @test result.args[2] == 3.0
 end
 
-function test_to_affine()
+function test_convert_to_affine()
     x1 = MOI.VariableIndex(1)
-    # x1 - 1.0 should simplify to ScalarAffineFunction
+    # x1 - 1.0 should convert to ScalarAffineFunction
     func = MOI.ScalarNonlinearFunction(:-, Any[x1, 1.0])
-    result = GenOpt._to_affine(Float64, func)
+    result = GenOpt._convert(MOI.ScalarAffineFunction{Float64}, func)
     @test result isa MOI.ScalarAffineFunction{Float64}
     @test length(result.terms) == 1
     @test result.terms[1].coefficient == 1.0
@@ -249,7 +249,7 @@ function test_simple_constraint_group()
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
         template,
         iterators,
     )
@@ -292,7 +292,7 @@ function test_consecutive_constraint_group()
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3, 4])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
         template,
         iterators,
     )
@@ -329,7 +329,7 @@ function test_parameter_data_lookup()
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
         template,
         iterators,
     )
@@ -377,7 +377,7 @@ function test_multidim_constraint_group()
         ],
     )
     iterators = [GenOpt.Iterator([1, 2]), GenOpt.Iterator([1, 2])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
         template,
         iterators,
     )
@@ -409,7 +409,7 @@ function test_equality_constraint_group()
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
         template,
         iterators,
     )

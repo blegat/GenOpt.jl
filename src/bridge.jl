@@ -4,47 +4,46 @@
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
 """
-    FunctionGeneratorBridge{T,S}
+    FunctionGeneratorBridge{T,F,S}
 
 Bridge that expands a `FunctionGenerator{F}` constraint into individual
-scalar constraints.
+scalar `F`-in-`S` constraints.
 
 The `FunctionGenerator` contains a template `MOI.ScalarNonlinearFunction`
 with `IteratorIndex` placeholders. This bridge substitutes concrete values
-from the iterators for each combination and adds the resulting scalar
-constraints to the model.
-
-Expanded expressions are simplified to `ScalarAffineFunction` when possible.
+from the iterators for each combination and converts each expanded expression
+to the type `F` declared by the `FunctionGenerator{F}` type parameter.
+If the expanded expression cannot be converted to `F`, an error is thrown.
 """
-struct FunctionGeneratorBridge{T,S} <: MOI.Bridges.Constraint.AbstractBridge
-    constraints::Vector{MOI.ConstraintIndex}
+struct FunctionGeneratorBridge{T,F,S} <: MOI.Bridges.Constraint.AbstractBridge
+    constraints::Vector{MOI.ConstraintIndex{F,S}}
     func::FunctionGenerator
     set::MOI.Utilities.VectorLinearSet
 end
 
 function MOI.Bridges.Constraint.bridge_constraint(
-    ::Type{FunctionGeneratorBridge{T,S}},
+    ::Type{FunctionGeneratorBridge{T,F,S}},
     model::MOI.ModelLike,
-    func::FunctionGenerator,
+    func::FunctionGenerator{F},
     set::MOI.Utilities.VectorLinearSet,
-) where {T,S}
+) where {T,F,S}
     scalar_set = S(zero(T))
-    constraints = MOI.ConstraintIndex[]
+    constraints = MOI.ConstraintIndex{F,S}[]
     sizes = Tuple(length.(func.iterators))
     for idx in CartesianIndices(sizes)
         values = [
             func.iterators[k].values[idx[k]] for k in eachindex(func.iterators)
         ]
         expanded = _expand(func.func, values)
-        simplified = _to_affine(T, expanded)
+        scalar_func = _convert(F, expanded)
         ci = MOI.Utilities.normalize_and_add_constraint(
             model,
-            simplified,
+            scalar_func,
             scalar_set,
         )
         push!(constraints, ci)
     end
-    return FunctionGeneratorBridge{T,S}(constraints, func, set)
+    return FunctionGeneratorBridge{T,F,S}(constraints, func, set)
 end
 
 function MOI.supports_constraint(
@@ -57,17 +56,17 @@ end
 
 function MOI.Bridges.Constraint.concrete_bridge_type(
     ::Type{FunctionGeneratorBridge{T}},
-    ::Type{<:FunctionGenerator},
+    ::Type{FunctionGenerator{F}},
     S::Type{<:MOI.Utilities.VectorLinearSet},
-) where {T}
+) where {T,F}
     ScalarS = MOI.Utilities.scalar_set_type(S, T)
-    return FunctionGeneratorBridge{T,ScalarS}
+    return FunctionGeneratorBridge{T,F,ScalarS}
 end
 
 function MOI.Bridges.added_constraint_types(
-    ::Type{FunctionGeneratorBridge{T,S}},
-) where {T,S}
-    return Tuple{Type,Type}[(MOI.ScalarAffineFunction{T}, S)]
+    ::Type{FunctionGeneratorBridge{T,F,S}},
+) where {T,F,S}
+    return Tuple{Type,Type}[(F, S)]
 end
 
 function MOI.Bridges.added_constrained_variable_types(
@@ -77,19 +76,17 @@ function MOI.Bridges.added_constrained_variable_types(
 end
 
 function MOI.get(
-    bridge::FunctionGeneratorBridge,
+    bridge::FunctionGeneratorBridge{T,F,S},
     ::MOI.NumberOfConstraints{F,S},
-) where {F,S}
-    return count(ci -> ci isa MOI.ConstraintIndex{F,S}, bridge.constraints)
+) where {T,F,S}
+    return length(bridge.constraints)
 end
 
 function MOI.get(
-    bridge::FunctionGeneratorBridge,
+    bridge::FunctionGeneratorBridge{T,F,S},
     ::MOI.ListOfConstraintIndices{F,S},
-) where {F,S}
-    return MOI.ConstraintIndex{F,S}[
-        ci for ci in bridge.constraints if ci isa MOI.ConstraintIndex{F,S}
-    ]
+) where {T,F,S}
+    return copy(bridge.constraints)
 end
 
 function MOI.get(
@@ -167,36 +164,22 @@ function _eval_op(head::Symbol, args::Vector)
     end
 end
 
-# --- Simplification to ScalarAffineFunction ---
+# --- Conversion from expanded ScalarNonlinearFunction to target type F ---
 
-"""
-    _to_affine(T, expr)
+_convert(::Type{MOI.ScalarNonlinearFunction}, expr::MOI.ScalarNonlinearFunction) = expr
+_convert(::Type{F}, expr::F) where {F} = expr
 
-Try to convert an expanded `ScalarNonlinearFunction` to a `ScalarAffineFunction`.
-Returns the original expression if it is not linear.
-"""
-function _to_affine(::Type{T}, expr::MOI.ScalarNonlinearFunction) where {T}
+function _convert(
+    ::Type{MOI.ScalarAffineFunction{T}},
+    expr::MOI.ScalarNonlinearFunction,
+) where {T}
     terms, constant = _collect_affine_terms(T, expr)
     if terms === nothing
-        return expr  # Not linear, keep as nonlinear
+        throw(InexactError(:convert, MOI.ScalarAffineFunction{T}, expr))
     end
     return MOI.ScalarAffineFunction(terms, T(constant))
 end
 
-function _to_affine(::Type{T}, x::MOI.VariableIndex) where {T}
-    return MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(one(T), x)], zero(T))
-end
-
-function _to_affine(::Type{T}, x::Number) where {T}
-    return MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], T(x))
-end
-
-"""
-    _collect_affine_terms(T, expr)
-
-Returns `(terms::Vector{ScalarAffineTerm}, constant::T)` if `expr` is linear,
-or `(nothing, 0)` if it is not.
-"""
 function _collect_affine_terms(
     ::Type{T},
     expr::MOI.ScalarNonlinearFunction,
@@ -219,7 +202,6 @@ function _collect_affine_terms(
         return (neg_t1, -c1)
     elseif expr.head == :* && length(expr.args) == 2
         a1, a2 = expr.args
-        # coeff * var or var * coeff
         if a1 isa Number && a2 isa MOI.VariableIndex
             return ([MOI.ScalarAffineTerm(T(a1), a2)], zero(T))
         elseif a2 isa Number && a1 isa MOI.VariableIndex

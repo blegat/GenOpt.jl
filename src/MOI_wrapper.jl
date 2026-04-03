@@ -60,55 +60,18 @@ end
 function MOI.Utilities.is_canonical(f::FunctionGenerator)
     return MOI.Utilities.is_canonical(f.func)
 end
+
+function MOI.output_dimension(f::FunctionGenerator)
+    return prod(length, f.iterators)
+end
+
 function MOI.Utilities.is_coefficient_type(
-    ::Type{FunctionGenerator{E}},
+    ::Type{<:FunctionGenerator},
     ::Type{T},
-) where {E,T}
-    return MOI.Utilities.is_coefficient_type(E, T)
-end
-
-# Methods needed for the LazyBridgeOptimizer to explore bridge paths
-# involving FunctionGenerator without erroring on promote_operation calls
-# from other bridges (e.g., FlipSignBridge, VectorSlackBridge).
-for op in (-, +)
-    @eval function MOI.Utilities.promote_operation(
-        ::typeof($op),
-        ::Type{T},
-        ::Type{FunctionGenerator{F}},
-    ) where {T<:Number,F}
-        return FunctionGenerator{F}
-    end
-    @eval function MOI.Utilities.promote_operation(
-        ::typeof($op),
-        ::Type{T},
-        ::Type{FunctionGenerator{F}},
-        ::Type{<:MOI.AbstractVectorFunction},
-    ) where {T<:Number,F}
-        return FunctionGenerator{F}
-    end
-    @eval function MOI.Utilities.promote_operation(
-        ::typeof($op),
-        ::Type{T},
-        ::Type{<:MOI.AbstractVectorFunction},
-        ::Type{FunctionGenerator{F}},
-    ) where {T<:Number,F}
-        return FunctionGenerator{F}
-    end
-end
-
-function MOI.Utilities.scalar_type(::Type{FunctionGenerator{F}}) where {F}
-    return F
-end
-
-function MOI.Utilities.operate(
-    ::typeof(-),
-    ::Type{T},
-    f::FunctionGenerator{F},
-) where {T,F}
-    return FunctionGenerator{F}(
-        MOI.ScalarNonlinearFunction(:-, Any[f.func]),
-        f.iterators,
-    )
+) where {T}
+    # Return false so standard MOI bridges (ScalarizeBridge, FlipSignBridge, etc.)
+    # don't try to handle FunctionGenerator. Only FunctionGeneratorBridge should.
+    return false
 end
 
 struct SumGenerator{F} <: MOI.AbstractScalarFunction
