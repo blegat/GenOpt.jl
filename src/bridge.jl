@@ -18,6 +18,8 @@ Expanded expressions are simplified to `ScalarAffineFunction` when possible.
 """
 struct FunctionGeneratorBridge{T,S} <: MOI.Bridges.Constraint.AbstractBridge
     constraints::Vector{MOI.ConstraintIndex}
+    func::FunctionGenerator
+    set::MOI.Utilities.VectorLinearSet
 end
 
 function MOI.Bridges.Constraint.bridge_constraint(
@@ -30,13 +32,19 @@ function MOI.Bridges.Constraint.bridge_constraint(
     constraints = MOI.ConstraintIndex[]
     sizes = Tuple(length.(func.iterators))
     for idx in CartesianIndices(sizes)
-        values = [func.iterators[k].values[idx[k]] for k in eachindex(func.iterators)]
+        values = [
+            func.iterators[k].values[idx[k]] for k in eachindex(func.iterators)
+        ]
         expanded = _expand(func.func, values)
         simplified = _to_affine(T, expanded)
-        ci = MOI.Utilities.normalize_and_add_constraint(model, simplified, scalar_set)
+        ci = MOI.Utilities.normalize_and_add_constraint(
+            model,
+            simplified,
+            scalar_set,
+        )
         push!(constraints, ci)
     end
-    return FunctionGeneratorBridge{T,S}(constraints)
+    return FunctionGeneratorBridge{T,S}(constraints, func, set)
 end
 
 function MOI.supports_constraint(
@@ -69,17 +77,35 @@ function MOI.Bridges.added_constrained_variable_types(
 end
 
 function MOI.get(
-    bridge::FunctionGeneratorBridge{T,S},
-    ::MOI.NumberOfConstraints{MOI.ScalarAffineFunction{T},S},
-) where {T,S}
-    return count(ci -> ci isa MOI.ConstraintIndex{MOI.ScalarAffineFunction{T},S}, bridge.constraints)
+    bridge::FunctionGeneratorBridge,
+    ::MOI.NumberOfConstraints{F,S},
+) where {F,S}
+    return count(ci -> ci isa MOI.ConstraintIndex{F,S}, bridge.constraints)
 end
 
 function MOI.get(
-    bridge::FunctionGeneratorBridge{T,S},
-    ::MOI.NumberOfConstraints{MOI.ScalarNonlinearFunction,S},
-) where {T,S}
-    return count(ci -> ci isa MOI.ConstraintIndex{MOI.ScalarNonlinearFunction,S}, bridge.constraints)
+    bridge::FunctionGeneratorBridge,
+    ::MOI.ListOfConstraintIndices{F,S},
+) where {F,S}
+    return MOI.ConstraintIndex{F,S}[
+        ci for ci in bridge.constraints if ci isa MOI.ConstraintIndex{F,S}
+    ]
+end
+
+function MOI.get(
+    ::MOI.ModelLike,
+    ::MOI.ConstraintFunction,
+    bridge::FunctionGeneratorBridge,
+)
+    return copy(bridge.func)
+end
+
+function MOI.get(
+    ::MOI.ModelLike,
+    ::MOI.ConstraintSet,
+    bridge::FunctionGeneratorBridge,
+)
+    return bridge.set
 end
 
 function MOI.delete(model::MOI.ModelLike, bridge::FunctionGeneratorBridge)
@@ -128,11 +154,15 @@ function _eval_op(head::Symbol, args::Vector)
     float_args = Float64.(args)
     if length(float_args) == 1
         return MOI.Nonlinear.eval_univariate_function(
-            registry, head, float_args[1],
+            registry,
+            head,
+            float_args[1],
         )
     else
         return MOI.Nonlinear.eval_multivariate_function(
-            registry, head, float_args,
+            registry,
+            head,
+            float_args,
         )
     end
 end
@@ -153,11 +183,13 @@ function _to_affine(::Type{T}, expr::MOI.ScalarNonlinearFunction) where {T}
     return MOI.ScalarAffineFunction(terms, T(constant))
 end
 
-_to_affine(::Type{T}, x::MOI.VariableIndex) where {T} =
-    MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(one(T), x)], zero(T))
+function _to_affine(::Type{T}, x::MOI.VariableIndex) where {T}
+    return MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(one(T), x)], zero(T))
+end
 
-_to_affine(::Type{T}, x::Number) where {T} =
-    MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], T(x))
+function _to_affine(::Type{T}, x::Number) where {T}
+    return MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], T(x))
+end
 
 """
     _collect_affine_terms(T, expr)
@@ -165,7 +197,10 @@ _to_affine(::Type{T}, x::Number) where {T} =
 Returns `(terms::Vector{ScalarAffineTerm}, constant::T)` if `expr` is linear,
 or `(nothing, 0)` if it is not.
 """
-function _collect_affine_terms(::Type{T}, expr::MOI.ScalarNonlinearFunction) where {T}
+function _collect_affine_terms(
+    ::Type{T},
+    expr::MOI.ScalarNonlinearFunction,
+) where {T}
     if expr.head == :+ && length(expr.args) == 2
         t1, c1 = _collect_affine_terms(T, expr.args[1])
         t2, c2 = _collect_affine_terms(T, expr.args[2])
@@ -192,12 +227,18 @@ function _collect_affine_terms(::Type{T}, expr::MOI.ScalarNonlinearFunction) whe
         elseif a1 isa Number && a2 isa MOI.ScalarNonlinearFunction
             t2, c2 = _collect_affine_terms(T, a2)
             t2 === nothing && return (nothing, zero(T))
-            scaled = [MOI.ScalarAffineTerm(T(a1) * t.coefficient, t.variable) for t in t2]
+            scaled = [
+                MOI.ScalarAffineTerm(T(a1) * t.coefficient, t.variable) for
+                t in t2
+            ]
             return (scaled, T(a1) * c2)
         elseif a2 isa Number && a1 isa MOI.ScalarNonlinearFunction
             t1, c1 = _collect_affine_terms(T, a1)
             t1 === nothing && return (nothing, zero(T))
-            scaled = [MOI.ScalarAffineTerm(T(a2) * t.coefficient, t.variable) for t in t1]
+            scaled = [
+                MOI.ScalarAffineTerm(T(a2) * t.coefficient, t.variable) for
+                t in t1
+            ]
             return (scaled, T(a2) * c1)
         elseif a1 isa Number && a2 isa Number
             return (MOI.ScalarAffineTerm{T}[], T(a1 * a2))

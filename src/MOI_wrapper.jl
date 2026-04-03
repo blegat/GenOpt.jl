@@ -36,6 +36,9 @@ struct IteratorIndex
 end
 
 Base.copy(i::IteratorIndex) = i
+function Base.isapprox(a::IteratorIndex, b::IteratorIndex; kwargs...)
+    return a.value == b.value
+end
 
 struct FunctionGenerator{F} <: MOI.AbstractVectorFunction
     func::MOI.ScalarNonlinearFunction
@@ -44,6 +47,15 @@ end
 
 function Base.copy(f::FunctionGenerator{F}) where {F}
     return FunctionGenerator{F}(copy(f.func), f.iterators)
+end
+
+function Base.isapprox(a::FunctionGenerator, b::FunctionGenerator; kwargs...)
+    return isapprox(a.func, b.func; kwargs...) &&
+           length(a.iterators) == length(b.iterators) &&
+           all(
+               isapprox(ai.values, bi.values; kwargs...) for
+               (ai, bi) in zip(a.iterators, b.iterators)
+           )
 end
 function MOI.Utilities.is_canonical(f::FunctionGenerator)
     return MOI.Utilities.is_canonical(f.func)

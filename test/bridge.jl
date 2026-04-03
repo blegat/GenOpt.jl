@@ -38,7 +38,156 @@ end
 
 function _minimize!(optimizer, obj)
     MOI.set(optimizer, MOI.ObjectiveSense(), MOI.MIN_SENSE)
-    MOI.set(optimizer, MOI.ObjectiveFunction{typeof(obj)}(), obj)
+    return MOI.set(optimizer, MOI.ObjectiveFunction{typeof(obj)}(), obj)
+end
+
+function test_runtests_simple()
+    # x[i] - 1 >= 0 for i in 1..3
+    # normalize_and_add moves constant to set: 1.0*x[i] + 0.0 >= 1.0
+    return MOI.Bridges.runtests(
+        GenOpt.FunctionGeneratorBridge,
+        model -> begin
+            x = MOI.add_variables(model, 3)
+            x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+            template = MOI.ScalarNonlinearFunction(
+                :-,
+                Any[
+                    MOI.ScalarNonlinearFunction(
+                        :getindex,
+                        Any[x_block, GenOpt.IteratorIndex(1)],
+                    ),
+                    1.0,
+                ],
+            )
+            iterators = [GenOpt.Iterator([1, 2, 3])]
+            func_gen =
+                GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+                    template,
+                    iterators,
+                )
+            MOI.add_constraint(model, func_gen, MOI.Nonnegatives(3))
+        end,
+        model -> begin
+            x = MOI.add_variables(model, 3)
+            for xi in x
+                MOI.add_constraint(
+                    model,
+                    MOI.ScalarAffineFunction(
+                        [MOI.ScalarAffineTerm(1.0, xi)],
+                        0.0,
+                    ),
+                    MOI.GreaterThan(1.0),
+                )
+            end
+        end,
+    )
+end
+
+function test_runtests_equality()
+    # x[i] - 5 == 0 for i in 1..2
+    # normalize_and_add moves constant to set: 1.0*x[i] + 0.0 == 5.0
+    return MOI.Bridges.runtests(
+        GenOpt.FunctionGeneratorBridge,
+        model -> begin
+            x = MOI.add_variables(model, 2)
+            x_block = GenOpt.ContiguousArrayOfVariables(0, (2,))
+            template = MOI.ScalarNonlinearFunction(
+                :-,
+                Any[
+                    MOI.ScalarNonlinearFunction(
+                        :getindex,
+                        Any[x_block, GenOpt.IteratorIndex(1)],
+                    ),
+                    5.0,
+                ],
+            )
+            iterators = [GenOpt.Iterator([1, 2])]
+            func_gen =
+                GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+                    template,
+                    iterators,
+                )
+            MOI.add_constraint(model, func_gen, MOI.Zeros(2))
+        end,
+        model -> begin
+            x = MOI.add_variables(model, 2)
+            for xi in x
+                MOI.add_constraint(
+                    model,
+                    MOI.ScalarAffineFunction(
+                        [MOI.ScalarAffineTerm(1.0, xi)],
+                        0.0,
+                    ),
+                    MOI.EqualTo(5.0),
+                )
+            end
+        end,
+    )
+end
+
+function test_runtests_consecutive()
+    # x[i] + x[i+1] - 2 >= 0 for i in 1..2 (3 variables)
+    # normalize_and_add: 1.0*x[i] + 1.0*x[i+1] + 0.0 >= 2.0
+    return MOI.Bridges.runtests(
+        GenOpt.FunctionGeneratorBridge,
+        model -> begin
+            x = MOI.add_variables(model, 3)
+            x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+            idx = GenOpt.IteratorIndex(1)
+            idx_plus_1 = MOI.ScalarNonlinearFunction(:+, Any[idx, 1])
+            template = MOI.ScalarNonlinearFunction(
+                :-,
+                Any[
+                    MOI.ScalarNonlinearFunction(
+                        :+,
+                        Any[
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, idx],
+                            ),
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, idx_plus_1],
+                            ),
+                        ],
+                    ),
+                    2.0,
+                ],
+            )
+            iterators = [GenOpt.Iterator([1, 2])]
+            func_gen =
+                GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+                    template,
+                    iterators,
+                )
+            MOI.add_constraint(model, func_gen, MOI.Nonnegatives(2))
+        end,
+        model -> begin
+            x = MOI.add_variables(model, 3)
+            MOI.add_constraint(
+                model,
+                MOI.ScalarAffineFunction(
+                    [
+                        MOI.ScalarAffineTerm(1.0, x[1]),
+                        MOI.ScalarAffineTerm(1.0, x[2]),
+                    ],
+                    0.0,
+                ),
+                MOI.GreaterThan(2.0),
+            )
+            MOI.add_constraint(
+                model,
+                MOI.ScalarAffineFunction(
+                    [
+                        MOI.ScalarAffineTerm(1.0, x[2]),
+                        MOI.ScalarAffineTerm(1.0, x[3]),
+                    ],
+                    0.0,
+                ),
+                MOI.GreaterThan(2.0),
+            )
+        end,
+    )
 end
 
 function test_expand_constant()
@@ -49,9 +198,8 @@ end
 
 function test_expand_variable()
     x = GenOpt.ContiguousArrayOfVariables(0, (3,))
-    index_expr = MOI.ScalarNonlinearFunction(
-        :+, Any[GenOpt.IteratorIndex(1), 1],
-    )
+    index_expr =
+        MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1])
     func = MOI.ScalarNonlinearFunction(:getindex, Any[x, index_expr])
     result = GenOpt._expand(func, [1])
     @test result == MOI.VariableIndex(2)
@@ -59,7 +207,8 @@ end
 
 function test_expand_with_variable_in_expr()
     func = MOI.ScalarNonlinearFunction(
-        :+, Any[MOI.VariableIndex(1), GenOpt.IteratorIndex(1)],
+        :+,
+        Any[MOI.VariableIndex(1), GenOpt.IteratorIndex(1)],
     )
     result = GenOpt._expand(func, [3.0])
     @test result isa MOI.ScalarNonlinearFunction
@@ -90,13 +239,20 @@ function test_simple_constraint_group()
 
     x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
     template = MOI.ScalarNonlinearFunction(
-        :-, Any[
-            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, GenOpt.IteratorIndex(1)]),
+        :-,
+        Any[
+            MOI.ScalarNonlinearFunction(
+                :getindex,
+                Any[x_block, GenOpt.IteratorIndex(1)],
+            ),
             1.0,
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(template, iterators)
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+        template,
+        iterators,
+    )
     MOI.add_constraint(optimizer, func_gen, MOI.Nonnegatives(3))
 
     _minimize!(optimizer, _affine_sum(x))
@@ -120,16 +276,26 @@ function test_consecutive_constraint_group()
     idx = GenOpt.IteratorIndex(1)
     idx_plus_1 = MOI.ScalarNonlinearFunction(:+, Any[idx, 1])
     template = MOI.ScalarNonlinearFunction(
-        :-, Any[
-            MOI.ScalarNonlinearFunction(:+, Any[
-                MOI.ScalarNonlinearFunction(:getindex, Any[x_block, idx]),
-                MOI.ScalarNonlinearFunction(:getindex, Any[x_block, idx_plus_1]),
-            ]),
+        :-,
+        Any[
+            MOI.ScalarNonlinearFunction(
+                :+,
+                Any[
+                    MOI.ScalarNonlinearFunction(:getindex, Any[x_block, idx]),
+                    MOI.ScalarNonlinearFunction(
+                        :getindex,
+                        Any[x_block, idx_plus_1],
+                    ),
+                ],
+            ),
             2.0,
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3, 4])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(template, iterators)
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+        template,
+        iterators,
+    )
     MOI.add_constraint(optimizer, func_gen, MOI.Nonnegatives(4))
 
     _minimize!(optimizer, _affine_sum(x))
@@ -156,13 +322,17 @@ function test_parameter_data_lookup()
     x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
     idx = GenOpt.IteratorIndex(1)
     template = MOI.ScalarNonlinearFunction(
-        :-, Any[
+        :-,
+        Any[
             MOI.ScalarNonlinearFunction(:getindex, Any[x_block, idx]),
             MOI.ScalarNonlinearFunction(:getindex, Any[demand, idx]),
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(template, iterators)
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+        template,
+        iterators,
+    )
     MOI.add_constraint(optimizer, func_gen, MOI.Nonnegatives(3))
 
     _minimize!(optimizer, _affine_sum(x))
@@ -183,21 +353,34 @@ function test_multidim_constraint_group()
     end
 
     x_block = GenOpt.ContiguousArrayOfVariables(0, (4,))
-    idx_expr = MOI.ScalarNonlinearFunction(:+, Any[
-        MOI.ScalarNonlinearFunction(:*, Any[
-            2,
-            MOI.ScalarNonlinearFunction(:-, Any[GenOpt.IteratorIndex(1), 1]),
-        ]),
-        GenOpt.IteratorIndex(2),
-    ])
+    idx_expr = MOI.ScalarNonlinearFunction(
+        :+,
+        Any[
+            MOI.ScalarNonlinearFunction(
+                :*,
+                Any[
+                    2,
+                    MOI.ScalarNonlinearFunction(
+                        :-,
+                        Any[GenOpt.IteratorIndex(1), 1],
+                    ),
+                ],
+            ),
+            GenOpt.IteratorIndex(2),
+        ],
+    )
     template = MOI.ScalarNonlinearFunction(
-        :-, Any[
+        :-,
+        Any[
             MOI.ScalarNonlinearFunction(:getindex, Any[x_block, idx_expr]),
             1.0,
         ],
     )
     iterators = [GenOpt.Iterator([1, 2]), GenOpt.Iterator([1, 2])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(template, iterators)
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+        template,
+        iterators,
+    )
     MOI.add_constraint(optimizer, func_gen, MOI.Nonnegatives(4))
 
     _minimize!(optimizer, _affine_sum(x))
@@ -216,13 +399,20 @@ function test_equality_constraint_group()
 
     x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
     template = MOI.ScalarNonlinearFunction(
-        :-, Any[
-            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, GenOpt.IteratorIndex(1)]),
+        :-,
+        Any[
+            MOI.ScalarNonlinearFunction(
+                :getindex,
+                Any[x_block, GenOpt.IteratorIndex(1)],
+            ),
             5.0,
         ],
     )
     iterators = [GenOpt.Iterator([1, 2, 3])]
-    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(template, iterators)
+    func_gen = GenOpt.FunctionGenerator{MOI.ScalarNonlinearFunction}(
+        template,
+        iterators,
+    )
     MOI.add_constraint(optimizer, func_gen, MOI.Zeros(3))
 
     _minimize!(optimizer, _affine_sum(x))
