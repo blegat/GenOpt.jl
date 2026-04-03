@@ -13,6 +13,11 @@ end
 Base.copy(array::ContiguousArrayOfVariables) = array
 Base.size(array::ContiguousArrayOfVariables) = array.size
 
+function Base.getindex(A::ContiguousArrayOfVariables, I::Integer...)
+    index = A.offset + Base._to_linear_index(CartesianIndices(A.size), I...)
+    return MOI.VariableIndex(index)
+end
+
 """
     struct Iterator{T}
         values::Vector{T}
@@ -23,6 +28,8 @@ struct Iterator{T}
 end
 
 Iterator(values::AbstractArray) = Iterator(vec(collect(values)))
+
+Base.length(it::Iterator) = length(it.values)
 
 struct IteratorIndex
     value::Int
@@ -46,6 +53,50 @@ function MOI.Utilities.is_coefficient_type(
     ::Type{T},
 ) where {E,T}
     return MOI.Utilities.is_coefficient_type(E, T)
+end
+
+# Methods needed for the LazyBridgeOptimizer to explore bridge paths
+# involving FunctionGenerator without erroring on promote_operation calls
+# from other bridges (e.g., FlipSignBridge, VectorSlackBridge).
+for op in (-, +)
+    @eval function MOI.Utilities.promote_operation(
+        ::typeof($op),
+        ::Type{T},
+        ::Type{FunctionGenerator{F}},
+    ) where {T<:Number,F}
+        return FunctionGenerator{F}
+    end
+    @eval function MOI.Utilities.promote_operation(
+        ::typeof($op),
+        ::Type{T},
+        ::Type{FunctionGenerator{F}},
+        ::Type{<:MOI.AbstractVectorFunction},
+    ) where {T<:Number,F}
+        return FunctionGenerator{F}
+    end
+    @eval function MOI.Utilities.promote_operation(
+        ::typeof($op),
+        ::Type{T},
+        ::Type{<:MOI.AbstractVectorFunction},
+        ::Type{FunctionGenerator{F}},
+    ) where {T<:Number,F}
+        return FunctionGenerator{F}
+    end
+end
+
+function MOI.Utilities.scalar_type(::Type{FunctionGenerator{F}}) where {F}
+    return F
+end
+
+function MOI.Utilities.operate(
+    ::typeof(-),
+    ::Type{T},
+    f::FunctionGenerator{F},
+) where {T,F}
+    return FunctionGenerator{F}(
+        MOI.ScalarNonlinearFunction(:-, Any[f.func]),
+        f.iterators,
+    )
 end
 
 struct SumGenerator{F} <: MOI.AbstractScalarFunction
