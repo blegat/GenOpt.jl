@@ -17,7 +17,6 @@ If the expanded expression cannot be converted to `F`, an error is thrown.
 """
 struct FunctionGeneratorBridge{T,F,S} <: MOI.Bridges.Constraint.AbstractBridge
     constraints::Vector{MOI.ConstraintIndex{F,S}}
-    func::FunctionGenerator{F}
 end
 
 function MOI.Bridges.Constraint.bridge_constraint(
@@ -42,7 +41,7 @@ function MOI.Bridges.Constraint.bridge_constraint(
         )
         push!(constraints, ci)
     end
-    return FunctionGeneratorBridge{T,F,S}(constraints, func)
+    return FunctionGeneratorBridge{T,F,S}(constraints)
 end
 
 function MOI.supports_constraint(
@@ -86,14 +85,6 @@ function MOI.get(
     ::MOI.ListOfConstraintIndices{F,S},
 ) where {T,F,S}
     return copy(bridge.constraints)
-end
-
-function MOI.get(
-    ::MOI.ModelLike,
-    ::MOI.ConstraintFunction,
-    bridge::FunctionGeneratorBridge,
-)
-    return copy(bridge.func)
 end
 
 function MOI.get(

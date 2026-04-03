@@ -80,6 +80,7 @@ function test_runtests_simple()
                 )
             end
         end,
+        cannot_unbridge = true,
     )
 end
 
@@ -122,6 +123,7 @@ function test_runtests_equality()
                 )
             end
         end,
+        cannot_unbridge = true,
     )
 end
 
@@ -187,6 +189,7 @@ function test_runtests_consecutive()
                 MOI.GreaterThan(2.0),
             )
         end,
+        cannot_unbridge = true,
     )
 end
 
