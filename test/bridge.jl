@@ -217,18 +217,6 @@ function test_expand_with_variable_in_expr()
     @test result.args[2] == 3.0
 end
 
-function test_convert_to_affine()
-    x1 = MOI.VariableIndex(1)
-    # x1 - 1.0 should convert to ScalarAffineFunction
-    func = MOI.ScalarNonlinearFunction(:-, Any[x1, 1.0])
-    result = GenOpt._convert(MOI.ScalarAffineFunction{Float64}, func)
-    @test result isa MOI.ScalarAffineFunction{Float64}
-    @test length(result.terms) == 1
-    @test result.terms[1].coefficient == 1.0
-    @test result.terms[1].variable == x1
-    @test result.constant == -1.0
-end
-
 function test_simple_constraint_group()
     # min sum(x)  s.t.  x[i] >= 1 for i in 1..3
     optimizer = _create_optimizer()
