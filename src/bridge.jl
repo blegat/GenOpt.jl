@@ -99,8 +99,8 @@ end
 function MOI.get(
     ::MOI.ModelLike,
     ::MOI.ConstraintSet,
-    bridge::FunctionGeneratorBridge,
-)
+    bridge::FunctionGeneratorBridge{T,F,S},
+) where {T,F,S}
     return MOI.Utilities.set_with_dimension(
         MOI.Utilities.vector_set_type(S),
         length(bridge.constraints),
