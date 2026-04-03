@@ -42,7 +42,7 @@ function MOI.Bridges.Constraint.bridge_constraint(
         )
         push!(constraints, ci)
     end
-    return FunctionGeneratorBridge{T,F,S}(constraints, func, set)
+    return FunctionGeneratorBridge{T,F,S}(constraints, func)
 end
 
 function MOI.supports_constraint(
