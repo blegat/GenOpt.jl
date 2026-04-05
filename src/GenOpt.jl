@@ -5,8 +5,11 @@
 
 module GenOpt
 
+import LinearAlgebra
+
 include("MOI_wrapper.jl")
 include("JuMP_wrapper.jl")
+include("array_of_variables.jl")
 include("examodels.jl")
 
 # Copied from JuMP.jl:
