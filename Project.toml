@@ -1,6 +1,6 @@
 name = "GenOpt"
 uuid = "f2c049d8-7489-4223-990c-4f1c121a4cde"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Benoît Legat <benoit.legat@gmail.com>"]
 
 [deps]
