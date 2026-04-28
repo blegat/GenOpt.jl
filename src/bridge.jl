@@ -34,7 +34,7 @@ function MOI.Bridges.Constraint.bridge_constraint(
             func.iterators[k].values[idx[k]] for k in eachindex(func.iterators)
         ]
         expanded = _expand(func.func, values)
-        scalar_func = _convert(F, expanded)
+        scalar_func = convert(F, expanded)
         ci = MOI.Utilities.normalize_and_add_constraint(
             model,
             scalar_func,
@@ -164,85 +164,4 @@ function _eval_op(head::Symbol, args::Vector)
             float_args,
         )
     end
-end
-
-# --- Conversion from expanded ScalarNonlinearFunction to target type F ---
-
-function _convert(
-    ::Type{MOI.ScalarNonlinearFunction},
-    expr::MOI.ScalarNonlinearFunction,
-)
-    return expr
-end
-_convert(::Type{F}, expr::F) where {F} = expr
-
-function _convert(
-    ::Type{MOI.ScalarAffineFunction{T}},
-    expr::MOI.ScalarNonlinearFunction,
-) where {T}
-    terms, constant = _collect_affine_terms(T, expr)
-    if terms === nothing
-        throw(InexactError(:convert, MOI.ScalarAffineFunction{T}, expr))
-    end
-    return MOI.ScalarAffineFunction(terms, T(constant))
-end
-
-function _collect_affine_terms(
-    ::Type{T},
-    expr::MOI.ScalarNonlinearFunction,
-) where {T}
-    if expr.head == :+ && length(expr.args) == 2
-        t1, c1 = _collect_affine_terms(T, expr.args[1])
-        t2, c2 = _collect_affine_terms(T, expr.args[2])
-        (t1 === nothing || t2 === nothing) && return (nothing, zero(T))
-        return (vcat(t1, t2), c1 + c2)
-    elseif expr.head == :- && length(expr.args) == 2
-        t1, c1 = _collect_affine_terms(T, expr.args[1])
-        t2, c2 = _collect_affine_terms(T, expr.args[2])
-        (t1 === nothing || t2 === nothing) && return (nothing, zero(T))
-        neg_t2 = [MOI.ScalarAffineTerm(-t.coefficient, t.variable) for t in t2]
-        return (vcat(t1, neg_t2), c1 - c2)
-    elseif expr.head == :- && length(expr.args) == 1
-        t1, c1 = _collect_affine_terms(T, expr.args[1])
-        t1 === nothing && return (nothing, zero(T))
-        neg_t1 = [MOI.ScalarAffineTerm(-t.coefficient, t.variable) for t in t1]
-        return (neg_t1, -c1)
-    elseif expr.head == :* && length(expr.args) == 2
-        a1, a2 = expr.args
-        if a1 isa Number && a2 isa MOI.VariableIndex
-            return ([MOI.ScalarAffineTerm(T(a1), a2)], zero(T))
-        elseif a2 isa Number && a1 isa MOI.VariableIndex
-            return ([MOI.ScalarAffineTerm(T(a2), a1)], zero(T))
-        elseif a1 isa Number && a2 isa MOI.ScalarNonlinearFunction
-            t2, c2 = _collect_affine_terms(T, a2)
-            t2 === nothing && return (nothing, zero(T))
-            scaled = [
-                MOI.ScalarAffineTerm(T(a1) * t.coefficient, t.variable) for
-                t in t2
-            ]
-            return (scaled, T(a1) * c2)
-        elseif a2 isa Number && a1 isa MOI.ScalarNonlinearFunction
-            t1, c1 = _collect_affine_terms(T, a1)
-            t1 === nothing && return (nothing, zero(T))
-            scaled = [
-                MOI.ScalarAffineTerm(T(a2) * t.coefficient, t.variable) for
-                t in t1
-            ]
-            return (scaled, T(a2) * c1)
-        elseif a1 isa Number && a2 isa Number
-            return (MOI.ScalarAffineTerm{T}[], T(a1 * a2))
-        else
-            return (nothing, zero(T))
-        end
-    else
-        return (nothing, zero(T))
-    end
-end
-
-function _collect_affine_terms(::Type{T}, x::MOI.VariableIndex) where {T}
-    return ([MOI.ScalarAffineTerm(one(T), x)], zero(T))
-end
-
-function _collect_affine_terms(::Type{T}, x::Number) where {T}
-    return (MOI.ScalarAffineTerm{T}[], T(x))
 end
