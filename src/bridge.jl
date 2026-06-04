@@ -227,13 +227,9 @@ macro _try_const(T, x, values)
                 nothing
             elseif _x isa IteratorIndex
                 _v = $values[_x.value]
-                _v isa $T ? _v :
-                    _v isa Int ? $T(_v) :
-                    _v isa Number ? $T(_v) : nothing
+                _v isa $T ? _v : (_v isa Int ? $T(_v) : nothing)
             elseif _x isa MOI.ScalarNonlinearFunction
                 _try_const_snf($T, _x, $values)
-            elseif _x isa Number
-                $T(_x)
             else
                 nothing
             end
@@ -486,7 +482,10 @@ _resolve_getindex(args, values) = _getindex_concrete(args[1], args, values)
 
 # Resolves an `args[k]` slot to an `Int`. The `::Int` return annotation
 # erases the Any returned from the type-unstable `args[k]` lookup, so the
-# caller doesn't pay boxing for the result.
+# caller doesn't pay boxing for the result. Index expressions may include
+# small arithmetic like `IteratorIndex(1) + 1`; we fold those here via
+# `_eval_index` rather than reusing `_try_const` (whose recursion would
+# widen the affine hot path's inferred return type to `Any`).
 @inline function _to_int(x, values)::Int
     if x isa Integer
         return Int(x)
@@ -495,9 +494,43 @@ _resolve_getindex(args, values) = _getindex_concrete(args[1], args, values)
     elseif x isa IteratorIndex
         return _to_int(values[x.value], values)
     elseif x isa MOI.ScalarNonlinearFunction
-        v = _try_const(Float64, x, values)
-        v === nothing && error("Cannot resolve `getindex` index: $x")
-        return Int(v)
+        return Int(_eval_index(x, values))
+    else
+        error("Cannot resolve `getindex` index: $x")
+    end
+end
+
+# Recursive folder for index arithmetic. Returns a `Float64` (so we can
+# represent `÷` / `/` outputs cleanly) and errors on anything that doesn't
+# fold to a constant. Kept separate from `_try_const_snf` because this
+# variant's recursion is fine here — `_to_int` is only called from the
+# `:getindex` path, not from the affine expression hot path.
+function _eval_index(x, values)::Float64
+    if x isa Integer
+        return Float64(x)
+    elseif x isa AbstractFloat
+        return Float64(x)
+    elseif x isa IteratorIndex
+        return _eval_index(values[x.value], values)
+    elseif x isa MOI.ScalarNonlinearFunction
+        h = x.head
+        args = x.args
+        n = length(args)
+        if h === :- && n == 1
+            return -_eval_index(args[1], values)
+        elseif h === :+ && n == 2
+            return _eval_index(args[1], values) + _eval_index(args[2], values)
+        elseif h === :- && n == 2
+            return _eval_index(args[1], values) - _eval_index(args[2], values)
+        elseif h === :* && n == 2
+            return _eval_index(args[1], values) * _eval_index(args[2], values)
+        elseif h === :/ && n == 2
+            return _eval_index(args[1], values) / _eval_index(args[2], values)
+        elseif h === :^ && n == 2
+            return _eval_index(args[1], values)^_eval_index(args[2], values)
+        else
+            error("Cannot resolve `getindex` index: $x")
+        end
     else
         error("Cannot resolve `getindex` index: $x")
     end
@@ -510,10 +543,12 @@ end
 function _try_const(::Type{T}, x, values) where {T}
     # Narrow to the *concrete* type `T` first. For T = Float64 and a literal
     # 2.0 stored as `Any`, this avoids the dynamic-dispatch `T(::Number)`
-    # conversion path (~32 B / call). We deliberately *don't* annotate the
-    # return type — `::Union{T,Nothing}` forces a runtime `convert`/
-    # `typeassert` that boxes the result. Letting Julia infer the union
-    # from the branches gives the same return type with zero boxing.
+    # conversion path (~32 B / call). Every branch returns either `T` or
+    # `nothing`, so Julia infers `Union{T,Nothing}` and the caller's
+    # `c isa T` check stays unboxed. We avoid the abstract `isa Number`
+    # branch (its `T(::Number)` conversion widens the inferred return to
+    # `Any` and re-introduces ~16 B/call); other `Real` types should be
+    # converted to `Int` / `T` before being stored in the iterator values.
     if x isa T
         return x
     elseif x isa Int
@@ -526,8 +561,6 @@ function _try_const(::Type{T}, x, values) where {T}
             return v
         elseif v isa Int
             return T(v)
-        elseif v isa Number
-            return T(v)
         else
             return nothing
         end
@@ -538,50 +571,27 @@ function _try_const(::Type{T}, x, values) where {T}
     end
 end
 
-function _try_const_snf(
+@inline function _try_const_snf(
     ::Type{T},
     expr::MOI.ScalarNonlinearFunction,
     values,
 ) where {T}
-    h = expr.head
-    if h === :getindex
-        # Inline-dispatch on the collection so the returned atom has a known
-        # concrete type and the `T(atom)` conversion below is statically
-        # resolved (no boxing).
+    # Handle the common `data_array[idx]` lookup pattern. Each branch returns
+    # either `T` or `nothing`, so Julia infers the function's return type as
+    # `Union{T,Nothing}` and the caller's `c isa T` check stays unboxed.
+    # Nested constant arithmetic on `:+`/`:-`/`:*`/`:/`/`:^` is intentionally
+    # not folded here: the resulting mutual recursion with `_try_const`
+    # widens the inferred return type to `Any` and re-introduces ~16 B/call.
+    # Templates that need a folded constant should pre-compute it.
+    if expr.head === :getindex
         coll = expr.args[1]
         if coll isa Vector{T}
             return _getindex_concrete1(coll, expr.args, values)
         elseif coll isa Matrix{T}
             return _getindex_concrete2(coll, expr.args, values)
-        elseif coll isa AbstractArray{<:Number}
-            x = _getindex_concrete(coll, expr.args, values)
-            return x isa Number ? T(x::Number) : nothing
-        elseif coll isa ContiguousArrayOfVariables
-            return nothing
         else
-            atom = _resolve_getindex(expr.args, values)
-            return atom isa T ? atom : (atom isa Number ? T(atom) : nothing)
+            return nothing
         end
-    end
-    args = expr.args
-    n = length(args)
-    if h === :- && n == 1
-        c = _try_const(T, args[1], values)
-        return c === nothing ? nothing : -c
-    elseif (h === :+ || h === :- || h === :* || h === :/) && n == 2
-        c1 = _try_const(T, args[1], values)
-        c1 === nothing && return nothing
-        c2 = _try_const(T, args[2], values)
-        c2 === nothing && return nothing
-        return h === :+ ? c1 + c2 :
-               h === :- ? c1 - c2 :
-               h === :* ? c1 * c2 : c1 / c2
-    elseif h === :^ && n == 2
-        c1 = _try_const(T, args[1], values)
-        c1 === nothing && return nothing
-        c2 = _try_const(T, args[2], values)
-        c2 === nothing && return nothing
-        return c1^c2
     end
     return nothing
 end
