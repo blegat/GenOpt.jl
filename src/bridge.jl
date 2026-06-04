@@ -45,16 +45,10 @@ function MOI.Bridges.Constraint.bridge_constraint(
     return FunctionGeneratorBridge{T,F,S}(constraints)
 end
 
-# Fallback: expand to a nonlinear function then convert. This is what we did
-# unconditionally before specialized expanders were added.
-function _build_function(::Type{F}, expr, values) where {F}
-    expanded = _expand(expr, values)
-    return convert(F, expanded)
-end
+# `_build_function(F, expr, values)` walks the template once and produces a
+# concrete `F`. Only specialized fast paths exist — there is no generic
+# `Base.convert` fallback.
 
-# Specialized fast path for ScalarAffineFunction: walk the template once and
-# push affine terms directly into a fresh output, avoiding the intermediate
-# ScalarNonlinearFunction allocations from `_expand`.
 function _build_function(
     ::Type{MOI.ScalarAffineFunction{T}},
     expr,
@@ -63,6 +57,28 @@ function _build_function(
     out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
     _expand_affine!(out, expr, values, one(T))
     return out
+end
+
+function _build_function(
+    ::Type{MOI.ScalarQuadraticFunction{T}},
+    expr,
+    values,
+) where {T}
+    out = MOI.ScalarQuadraticFunction(
+        MOI.ScalarQuadraticTerm{T}[],
+        MOI.ScalarAffineTerm{T}[],
+        zero(T),
+    )
+    _expand_quadratic!(out, expr, values, one(T))
+    return out
+end
+
+function _build_function(
+    ::Type{MOI.ScalarNonlinearFunction},
+    expr,
+    values,
+)
+    return _expand(expr, values)
 end
 
 function MOI.supports_constraint(
@@ -233,8 +249,7 @@ function _expand_affine!(
         end
         throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, expr))
     elseif h === :getindex
-        atom = _resolve_getindex(args, values)
-        _expand_affine!(out, atom, values, coef)
+        _expand_getindex_affine!(out, args, values, coef)
         return
     else
         c = _try_const(T, expr, values)
@@ -275,12 +290,38 @@ function _expand_affine!(
     return _expand_affine!(out, values[x.value], values, coef)
 end
 
-# Resolve a `:getindex` node's arg list to a concrete leaf (Number or
-# VariableIndex). Indices may be literal `Integer`/`AbstractFloat`s or
-# `IteratorIndex` placeholders. We dispatch on common arities (1-D / 2-D)
-# to avoid the allocations of splatting an `ntuple`-built index tuple.
-function _resolve_getindex(args, values)
+# Affine `:getindex` dispatcher. Branching on the concrete type of the
+# collection lets the compiler resolve `getindex` statically (no boxing of
+# the indexed atom). Common collections: `ContiguousArrayOfVariables` for
+# variable arrays, `AbstractArray{<:Number}` for data lookups.
+function _expand_getindex_affine!(
+    out::MOI.ScalarAffineFunction{T},
+    args,
+    values,
+    coef::T,
+) where {T}
     coll = args[1]
+    if coll isa ContiguousArrayOfVariables
+        v = _getindex_concrete(coll, args, values)::MOI.VariableIndex
+        push!(out.terms, MOI.ScalarAffineTerm(coef, v))
+    elseif coll isa AbstractArray{T}
+        x = _getindex_concrete(coll, args, values)::T
+        out.constant += coef * x
+    elseif coll isa AbstractArray{<:Number}
+        x = _getindex_concrete(coll, args, values)
+        out.constant += coef * T(x::Number)
+    else
+        atom = _resolve_getindex(args, values)
+        _expand_affine!(out, atom, values, coef)
+    end
+    return
+end
+
+# Resolve a `:getindex` arg list with a concretely-typed collection. Taking
+# `coll` as the first positional argument lets the caller dispatch (e.g.
+# `coll isa ContiguousArrayOfVariables`) so the `getindex` result type is
+# inferable — no boxing on the way back out.
+function _getindex_concrete(coll, args, values)
     n = length(args) - 1
     if n == 1
         return getindex(coll, _to_int(args[2], values))
@@ -303,13 +344,26 @@ function _resolve_getindex(args, values)
     end
 end
 
-@inline _to_int(x::Integer, _) = Int(x)
-@inline _to_int(x::AbstractFloat, _) = Int(x)
-@inline _to_int(x::IteratorIndex, values) = _to_int(values[x.value], values)
-function _to_int(expr::MOI.ScalarNonlinearFunction, values)
-    v = _try_const(Float64, expr, values)
-    v === nothing && error("Cannot resolve `getindex` index: $expr")
-    return Int(v)
+# `coll` here is `Any` (from `args[1]`); used as the slow / fallback path.
+_resolve_getindex(args, values) = _getindex_concrete(args[1], args, values)
+
+# Resolves an `args[k]` slot to an `Int`. The `::Int` return annotation
+# erases the Any returned from the type-unstable `args[k]` lookup, so the
+# caller doesn't pay boxing for the result.
+@inline function _to_int(x, values)::Int
+    if x isa Integer
+        return Int(x)
+    elseif x isa AbstractFloat
+        return Int(x)
+    elseif x isa IteratorIndex
+        return _to_int(values[x.value], values)
+    elseif x isa MOI.ScalarNonlinearFunction
+        v = _try_const(Float64, x, values)
+        v === nothing && error("Cannot resolve `getindex` index: $x")
+        return Int(v)
+    else
+        error("Cannot resolve `getindex` index: $x")
+    end
 end
 
 # Returns `T(x)` if `x` resolves to a numeric constant (after substituting
@@ -353,230 +407,154 @@ function _try_const(
     end
     return nothing
 end
-# --- Conversion from expanded ScalarNonlinearFunction to MOI scalar functions ---
-# `bridge_constraint` calls `convert(F, expanded)` where `F` is the function
-# type of the `FunctionGenerator`. MOI does not provide a generic
-# `convert(::ScalarAffineFunction, ::ScalarNonlinearFunction)` /
-# `convert(::ScalarQuadraticFunction, ::ScalarNonlinearFunction)`, so we
-# define them here by walking the `:+`, `:-`, `:*`, `:^` head structure.
 
-function Base.convert(
-    ::Type{MOI.ScalarAffineFunction{T}},
-    expr::MOI.ScalarNonlinearFunction,
-) where {T}
-    terms, constant = _collect_affine_terms(T, expr)
-    terms === nothing &&
-        throw(InexactError(:convert, MOI.ScalarAffineFunction{T}, expr))
-    return MOI.ScalarAffineFunction(terms, T(constant))
-end
+# --- In-place quadratic expansion ---
+#
+# Like `_expand_affine!` but the target is `ScalarQuadraticFunction`. Variable
+# / variable products (and base^2) push into `out.quadratic_terms`; everything
+# else pushes into `out.affine_terms` and `out.constant`. Quadratic terms
+# follow MOI's convention: diagonal coefficients are stored doubled.
 
-function _collect_affine_terms(
-    ::Type{T},
+function _expand_quadratic!(
+    out::MOI.ScalarQuadraticFunction{T},
     expr::MOI.ScalarNonlinearFunction,
+    values,
+    coef::T,
 ) where {T}
-    if expr.head == :+ && length(expr.args) == 2
-        t1, c1 = _collect_affine_terms(T, expr.args[1])
-        t2, c2 = _collect_affine_terms(T, expr.args[2])
-        (t1 === nothing || t2 === nothing) && return (nothing, zero(T))
-        return (vcat(t1, t2), c1 + c2)
-    elseif expr.head == :- && length(expr.args) == 2
-        t1, c1 = _collect_affine_terms(T, expr.args[1])
-        t2, c2 = _collect_affine_terms(T, expr.args[2])
-        (t1 === nothing || t2 === nothing) && return (nothing, zero(T))
-        neg_t2 = [MOI.ScalarAffineTerm(-t.coefficient, t.variable) for t in t2]
-        return (vcat(t1, neg_t2), c1 - c2)
-    elseif expr.head == :- && length(expr.args) == 1
-        t1, c1 = _collect_affine_terms(T, expr.args[1])
-        t1 === nothing && return (nothing, zero(T))
-        neg_t1 = [MOI.ScalarAffineTerm(-t.coefficient, t.variable) for t in t1]
-        return (neg_t1, -c1)
-    elseif expr.head == :* && length(expr.args) == 2
-        a1, a2 = expr.args
-        if a1 isa Number && a2 isa MOI.VariableIndex
-            return ([MOI.ScalarAffineTerm(T(a1), a2)], zero(T))
-        elseif a2 isa Number && a1 isa MOI.VariableIndex
-            return ([MOI.ScalarAffineTerm(T(a2), a1)], zero(T))
-        elseif a1 isa Number && a2 isa MOI.ScalarNonlinearFunction
-            t2, c2 = _collect_affine_terms(T, a2)
-            t2 === nothing && return (nothing, zero(T))
-            scaled = [
-                MOI.ScalarAffineTerm(T(a1) * t.coefficient, t.variable) for
-                t in t2
-            ]
-            return (scaled, T(a1) * c2)
-        elseif a2 isa Number && a1 isa MOI.ScalarNonlinearFunction
-            t1, c1 = _collect_affine_terms(T, a1)
-            t1 === nothing && return (nothing, zero(T))
-            scaled = [
-                MOI.ScalarAffineTerm(T(a2) * t.coefficient, t.variable) for
-                t in t1
-            ]
-            return (scaled, T(a2) * c1)
-        elseif a1 isa Number && a2 isa Number
-            return (MOI.ScalarAffineTerm{T}[], T(a1 * a2))
+    h = expr.head
+    args = expr.args
+    if h === :+
+        for a in args
+            _expand_quadratic!(out, a, values, coef)
+        end
+        return
+    elseif h === :-
+        n = length(args)
+        if n == 2
+            _expand_quadratic!(out, args[1], values, coef)
+            _expand_quadratic!(out, args[2], values, -coef)
+        elseif n == 1
+            _expand_quadratic!(out, args[1], values, -coef)
         else
-            return (nothing, zero(T))
+            error("Unexpected arity $n for `-`")
+        end
+        return
+    elseif h === :* && length(args) == 2
+        a1, a2 = args[1], args[2]
+        c1 = _try_const(T, a1, values)
+        if c1 !== nothing
+            _expand_quadratic!(out, a2, values, coef * c1)
+            return
+        end
+        c2 = _try_const(T, a2, values)
+        if c2 !== nothing
+            _expand_quadratic!(out, a1, values, coef * c2)
+            return
+        end
+        # Both sides have variables → product is quadratic. Materialize each
+        # side as an affine form (using the fast affine path) and multiply.
+        saf1 = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
+        _expand_affine!(saf1, a1, values, one(T))
+        saf2 = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
+        _expand_affine!(saf2, a2, values, one(T))
+        _accumulate_product!(out, saf1, saf2, coef)
+        return
+    elseif h === :^ && length(args) == 2 && args[2] == 2
+        saf = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
+        _expand_affine!(saf, args[1], values, one(T))
+        _accumulate_product!(out, saf, saf, coef)
+        return
+    elseif h === :getindex
+        coll = args[1]
+        if coll isa ContiguousArrayOfVariables
+            v = _getindex_concrete(coll, args, values)
+            push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
+            return
+        elseif coll isa AbstractArray && eltype(coll) <: Number
+            x = _getindex_concrete(coll, args, values)
+            out.constant += coef * T(x)
+            return
+        else
+            atom = _resolve_getindex(args, values)
+            _expand_quadratic!(out, atom, values, coef)
+            return
         end
     else
-        return (nothing, zero(T))
+        c = _try_const(T, expr, values)
+        if c !== nothing
+            out.constant += coef * c
+            return
+        end
+        throw(InexactError(:_expand_quadratic!, MOI.ScalarQuadraticFunction{T}, expr))
     end
 end
 
-function _collect_affine_terms(::Type{T}, x::MOI.VariableIndex) where {T}
-    return ([MOI.ScalarAffineTerm(one(T), x)], zero(T))
-end
-
-function _collect_affine_terms(::Type{T}, x::Number) where {T}
-    return (MOI.ScalarAffineTerm{T}[], T(x))
-end
-
-function Base.convert(
-    ::Type{MOI.ScalarQuadraticFunction{T}},
-    expr::MOI.ScalarNonlinearFunction,
+function _expand_quadratic!(
+    out::MOI.ScalarQuadraticFunction{T},
+    x::Number,
+    values,
+    coef::T,
 ) where {T}
-    result = _collect_quadratic_terms(T, expr)
-    result === nothing &&
-        throw(InexactError(:convert, MOI.ScalarQuadraticFunction{T}, expr))
-    aff, quad, constant = result
-    return MOI.ScalarQuadraticFunction(quad, aff, T(constant))
+    out.constant += coef * T(x)
+    return
 end
 
-# Returns `(affine_terms, quadratic_terms, constant)` or `nothing` if `expr`
-# is not (at most) quadratic. Quadratic terms follow MOI's convention:
-# `coefficient * x_1 * x_2` for off-diagonal, `(1/2) * coefficient * x^2` on
-# the diagonal — so an `x*y` (x !== y) term stores coefficient `1`, while
-# an `x^2` term stores coefficient `2`.
-function _collect_quadratic_terms(
-    ::Type{T},
-    expr::MOI.ScalarNonlinearFunction,
+function _expand_quadratic!(
+    out::MOI.ScalarQuadraticFunction{T},
+    x::MOI.VariableIndex,
+    values,
+    coef::T,
 ) where {T}
-    if expr.head == :+ && length(expr.args) == 2
-        r1 = _collect_quadratic_terms(T, expr.args[1])
-        r2 = _collect_quadratic_terms(T, expr.args[2])
-        (r1 === nothing || r2 === nothing) && return nothing
-        a1, q1, c1 = r1
-        a2, q2, c2 = r2
-        return (vcat(a1, a2), vcat(q1, q2), c1 + c2)
-    elseif expr.head == :- && length(expr.args) == 2
-        r1 = _collect_quadratic_terms(T, expr.args[1])
-        r2 = _collect_quadratic_terms(T, expr.args[2])
-        (r1 === nothing || r2 === nothing) && return nothing
-        a1, q1, c1 = r1
-        a2, q2, c2 = r2
-        neg_a = [MOI.ScalarAffineTerm(-t.coefficient, t.variable) for t in a2]
-        neg_q = [
-            MOI.ScalarQuadraticTerm(-t.coefficient, t.variable_1, t.variable_2)
-            for t in q2
-        ]
-        return (vcat(a1, neg_a), vcat(q1, neg_q), c1 - c2)
-    elseif expr.head == :- && length(expr.args) == 1
-        r = _collect_quadratic_terms(T, expr.args[1])
-        r === nothing && return nothing
-        a, q, c = r
-        neg_a = [MOI.ScalarAffineTerm(-t.coefficient, t.variable) for t in a]
-        neg_q = [
-            MOI.ScalarQuadraticTerm(-t.coefficient, t.variable_1, t.variable_2)
-            for t in q
-        ]
-        return (neg_a, neg_q, -c)
-    elseif expr.head == :* && length(expr.args) == 2
-        a1, a2 = expr.args
-        r1 = _collect_quadratic_terms(T, a1)
-        r2 = _collect_quadratic_terms(T, a2)
-        (r1 === nothing || r2 === nothing) && return nothing
-        af1, q1, c1 = r1
-        af2, q2, c2 = r2
-        # Refuse cases that would push the degree above 2.
-        if !isempty(q1) && !isempty(q2)
-            return nothing
-        elseif !isempty(q1) && !isempty(af2)
-            return nothing
-        elseif !isempty(q2) && !isempty(af1)
-            return nothing
-        end
-        # (af1 + q1 + c1) * (af2 + q2 + c2)
-        aff = MOI.ScalarAffineTerm{T}[]
-        quad = MOI.ScalarQuadraticTerm{T}[]
-        for t in af2
-            push!(aff, MOI.ScalarAffineTerm(c1 * t.coefficient, t.variable))
-        end
-        for t in q2
+    push!(out.affine_terms, MOI.ScalarAffineTerm(coef, x))
+    return
+end
+
+function _expand_quadratic!(
+    out::MOI.ScalarQuadraticFunction{T},
+    x::IteratorIndex,
+    values,
+    coef::T,
+) where {T}
+    return _expand_quadratic!(out, values[x.value], values, coef)
+end
+
+# Push `coef * (saf1.constant + Σ t1.coef*v1) * (saf2.constant + Σ t2.coef*v2)`
+# into `out`'s affine + quadratic + constant slots, following MOI's diagonal-
+# stored-doubled convention.
+function _accumulate_product!(
+    out::MOI.ScalarQuadraticFunction{T},
+    saf1::MOI.ScalarAffineFunction{T},
+    saf2::MOI.ScalarAffineFunction{T},
+    coef::T,
+) where {T}
+    for t1 in saf1.terms, t2 in saf2.terms
+        c = coef * t1.coefficient * t2.coefficient
+        v1, v2 = t1.variable, t2.variable
+        if v1 == v2
             push!(
-                quad,
-                MOI.ScalarQuadraticTerm(
-                    c1 * t.coefficient,
-                    t.variable_1,
-                    t.variable_2,
-                ),
+                out.quadratic_terms,
+                MOI.ScalarQuadraticTerm(T(2) * c, v1, v2),
             )
-        end
-        for t in af1
-            push!(aff, MOI.ScalarAffineTerm(c2 * t.coefficient, t.variable))
-        end
-        for t in q1
-            push!(
-                quad,
-                MOI.ScalarQuadraticTerm(
-                    c2 * t.coefficient,
-                    t.variable_1,
-                    t.variable_2,
-                ),
-            )
-        end
-        for t1 in af1, t2 in af2
-            coef = t1.coefficient * t2.coefficient
-            v1, v2 = t1.variable, t2.variable
-            if v1 == v2
-                push!(quad, MOI.ScalarQuadraticTerm(T(2) * coef, v1, v2))
-            else
-                push!(quad, MOI.ScalarQuadraticTerm(coef, v1, v2))
-            end
-        end
-        return (aff, quad, c1 * c2)
-    elseif expr.head == :^ && length(expr.args) == 2
-        base, power = expr.args
-        if power == 2
-            r = _collect_quadratic_terms(T, base)
-            r === nothing && return nothing
-            af, q, c = r
-            !isempty(q) && return nothing # would be quartic
-            aff = MOI.ScalarAffineTerm{T}[]
-            quad = MOI.ScalarQuadraticTerm{T}[]
-            for t in af
-                push!(aff, MOI.ScalarAffineTerm(T(2) * c * t.coefficient, t.variable))
-            end
-            for t1 in af, t2 in af
-                coef = t1.coefficient * t2.coefficient
-                v1, v2 = t1.variable, t2.variable
-                if v1 == v2
-                    push!(quad, MOI.ScalarQuadraticTerm(T(2) * coef, v1, v2))
-                else
-                    push!(quad, MOI.ScalarQuadraticTerm(coef, v1, v2))
-                end
-            end
-            return (aff, quad, c * c)
-        elseif power == 1
-            return _collect_quadratic_terms(T, base)
         else
-            return nothing
+            push!(out.quadratic_terms, MOI.ScalarQuadraticTerm(c, v1, v2))
         end
-    else
-        return nothing
     end
-end
-
-function _collect_quadratic_terms(::Type{T}, x::MOI.VariableIndex) where {T}
-    return (
-        [MOI.ScalarAffineTerm(one(T), x)],
-        MOI.ScalarQuadraticTerm{T}[],
-        zero(T),
-    )
-end
-
-function _collect_quadratic_terms(::Type{T}, x::Number) where {T}
-    return (
-        MOI.ScalarAffineTerm{T}[],
-        MOI.ScalarQuadraticTerm{T}[],
-        T(x),
-    )
+    if !iszero(saf2.constant)
+        for t in saf1.terms
+            push!(
+                out.affine_terms,
+                MOI.ScalarAffineTerm(coef * t.coefficient * saf2.constant, t.variable),
+            )
+        end
+    end
+    if !iszero(saf1.constant)
+        for t in saf2.terms
+            push!(
+                out.affine_terms,
+                MOI.ScalarAffineTerm(coef * saf1.constant * t.coefficient, t.variable),
+            )
+        end
+    end
+    out.constant += coef * saf1.constant * saf2.constant
+    return
 end
