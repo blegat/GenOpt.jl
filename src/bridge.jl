@@ -28,12 +28,13 @@ function MOI.Bridges.Constraint.bridge_constraint(
     scalar_set = S(zero(T))
     constraints = MOI.ConstraintIndex{F,S}[]
     sizes = Tuple(length.(func.iterators))
+    nit = length(func.iterators)
+    values = Vector{Any}(undef, nit)
     for idx in CartesianIndices(sizes)
-        values = [
-            func.iterators[k].values[idx[k]] for k in eachindex(func.iterators)
-        ]
-        expanded = _expand(func.func, values)
-        scalar_func = convert(F, expanded)
+        for k in 1:nit
+            values[k] = func.iterators[k].values[idx[k]]
+        end
+        scalar_func = _build_function(F, func.func, values)
         ci = MOI.Utilities.normalize_and_add_constraint(
             model,
             scalar_func,
@@ -42,6 +43,26 @@ function MOI.Bridges.Constraint.bridge_constraint(
         push!(constraints, ci)
     end
     return FunctionGeneratorBridge{T,F,S}(constraints)
+end
+
+# Fallback: expand to a nonlinear function then convert. This is what we did
+# unconditionally before specialized expanders were added.
+function _build_function(::Type{F}, expr, values) where {F}
+    expanded = _expand(expr, values)
+    return convert(F, expanded)
+end
+
+# Specialized fast path for ScalarAffineFunction: walk the template once and
+# push affine terms directly into a fresh output, avoiding the intermediate
+# ScalarNonlinearFunction allocations from `_expand`.
+function _build_function(
+    ::Type{MOI.ScalarAffineFunction{T}},
+    expr,
+    values,
+) where {T}
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
+    _expand_affine!(out, expr, values, one(T))
+    return out
 end
 
 function MOI.supports_constraint(
@@ -155,6 +176,182 @@ function _eval_op(head::Symbol, args::Vector)
             float_args,
         )
     end
+end
+
+# --- In-place affine expansion ---
+#
+# `_expand_affine!(out, expr, values, coef)` walks `expr` once and pushes
+# `coef * <leaf>` contributions directly into `out.terms` / `out.constant`,
+# substituting `IteratorIndex` from `values` and resolving `:getindex` on
+# concrete integer indices. It allocates only when `out.terms` needs to grow,
+# so a caller that `sizehint!`s the vector to the final term count gets an
+# allocation-free recursion.
+
+@inline function _add_constant!(
+    out::MOI.ScalarAffineFunction{T},
+    c::T,
+) where {T}
+    out.constant += c
+    return
+end
+
+function _expand_affine!(
+    out::MOI.ScalarAffineFunction{T},
+    expr::MOI.ScalarNonlinearFunction,
+    values,
+    coef::T,
+) where {T}
+    h = expr.head
+    args = expr.args
+    if h === :+
+        for a in args
+            _expand_affine!(out, a, values, coef)
+        end
+        return
+    elseif h === :-
+        n = length(args)
+        if n == 2
+            _expand_affine!(out, args[1], values, coef)
+            _expand_affine!(out, args[2], values, -coef)
+        elseif n == 1
+            _expand_affine!(out, args[1], values, -coef)
+        else
+            error("Unexpected arity $n for `-`")
+        end
+        return
+    elseif h === :* && length(args) == 2
+        a1, a2 = args[1], args[2]
+        c1 = _try_const(T, a1, values)
+        if c1 !== nothing
+            _expand_affine!(out, a2, values, coef * c1)
+            return
+        end
+        c2 = _try_const(T, a2, values)
+        if c2 !== nothing
+            _expand_affine!(out, a1, values, coef * c2)
+            return
+        end
+        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, expr))
+    elseif h === :getindex
+        atom = _resolve_getindex(args, values)
+        _expand_affine!(out, atom, values, coef)
+        return
+    else
+        c = _try_const(T, expr, values)
+        if c !== nothing
+            _add_constant!(out, coef * c)
+            return
+        end
+        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, expr))
+    end
+end
+
+function _expand_affine!(
+    out::MOI.ScalarAffineFunction{T},
+    x::Number,
+    values,
+    coef::T,
+) where {T}
+    _add_constant!(out, coef * T(x))
+    return
+end
+
+function _expand_affine!(
+    out::MOI.ScalarAffineFunction{T},
+    x::MOI.VariableIndex,
+    values,
+    coef::T,
+) where {T}
+    push!(out.terms, MOI.ScalarAffineTerm(coef, x))
+    return
+end
+
+function _expand_affine!(
+    out::MOI.ScalarAffineFunction{T},
+    x::IteratorIndex,
+    values,
+    coef::T,
+) where {T}
+    return _expand_affine!(out, values[x.value], values, coef)
+end
+
+# Resolve a `:getindex` node's arg list to a concrete leaf (Number or
+# VariableIndex). Indices may be literal `Integer`/`AbstractFloat`s or
+# `IteratorIndex` placeholders. We dispatch on common arities (1-D / 2-D)
+# to avoid the allocations of splatting an `ntuple`-built index tuple.
+function _resolve_getindex(args, values)
+    coll = args[1]
+    n = length(args) - 1
+    if n == 1
+        return getindex(coll, _to_int(args[2], values))
+    elseif n == 2
+        return getindex(
+            coll,
+            _to_int(args[2], values),
+            _to_int(args[3], values),
+        )
+    elseif n == 3
+        return getindex(
+            coll,
+            _to_int(args[2], values),
+            _to_int(args[3], values),
+            _to_int(args[4], values),
+        )
+    else
+        idx = ntuple(k -> _to_int(args[k+1], values), n)
+        return getindex(coll, idx...)
+    end
+end
+
+@inline _to_int(x::Integer, _) = Int(x)
+@inline _to_int(x::AbstractFloat, _) = Int(x)
+@inline _to_int(x::IteratorIndex, values) = _to_int(values[x.value], values)
+function _to_int(expr::MOI.ScalarNonlinearFunction, values)
+    v = _try_const(Float64, expr, values)
+    v === nothing && error("Cannot resolve `getindex` index: $expr")
+    return Int(v)
+end
+
+# Returns `T(x)` if `x` resolves to a numeric constant (after substituting
+# `IteratorIndex`es from `values`); otherwise `nothing`. Stays type-stable
+# via the small `Union{T,Nothing}` return.
+@inline _try_const(::Type{T}, x::Number, _) where {T} = T(x)
+@inline _try_const(::Type{T}, ::MOI.VariableIndex, _) where {T} = nothing
+@inline function _try_const(::Type{T}, x::IteratorIndex, values) where {T}
+    v = values[x.value]
+    return v isa Number ? T(v) : nothing
+end
+function _try_const(
+    ::Type{T},
+    expr::MOI.ScalarNonlinearFunction,
+    values,
+) where {T}
+    h = expr.head
+    if h === :getindex
+        atom = _resolve_getindex(expr.args, values)
+        return atom isa Number ? T(atom) : nothing
+    end
+    args = expr.args
+    n = length(args)
+    if h === :- && n == 1
+        c = _try_const(T, args[1], values)
+        return c === nothing ? nothing : -c
+    elseif (h === :+ || h === :- || h === :* || h === :/) && n == 2
+        c1 = _try_const(T, args[1], values)
+        c1 === nothing && return nothing
+        c2 = _try_const(T, args[2], values)
+        c2 === nothing && return nothing
+        return h === :+ ? c1 + c2 :
+               h === :- ? c1 - c2 :
+               h === :* ? c1 * c2 : c1 / c2
+    elseif h === :^ && n == 2
+        c1 = _try_const(T, args[1], values)
+        c1 === nothing && return nothing
+        c2 = _try_const(T, args[2], values)
+        c2 === nothing && return nothing
+        return c1^c2
+    end
+    return nothing
 end
 # --- Conversion from expanded ScalarNonlinearFunction to MOI scalar functions ---
 # `bridge_constraint` calls `convert(F, expanded)` where `F` is the function
