@@ -416,10 +416,12 @@ function test_equality_constraint_group()
 end
 
 function test_expand_affine_allocation_free()
-    # Template: 2 * x[1] + 3 * x[i] - 1 for i in 1..3
-    # Exercises the `+`, `-`, `*` (with a literal coefficient on the left of
-    # each `*`), and `:getindex` branches.
+    # Template: 2 * x[1] + price[i] * x[i] - 1 for i in 1..3
+    # Exercises all the relevant branches: `+`, `-`, `*` (literal-on-left,
+    # data-lookup-on-left), `:getindex` on both `ContiguousArrayOfVariables`
+    # and `Vector{Float64}`.
     x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+    price = [2.0, 3.0, 5.0]
     idx = GenOpt.IteratorIndex(1)
     template = MOI.ScalarNonlinearFunction(
         :-,
@@ -440,7 +442,10 @@ function test_expand_affine_allocation_free()
                     MOI.ScalarNonlinearFunction(
                         :*,
                         Any[
-                            3.0,
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[price, idx],
+                            ),
                             MOI.ScalarNonlinearFunction(
                                 :getindex,
                                 Any[x_block, idx],
