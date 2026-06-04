@@ -415,6 +415,67 @@ function test_equality_constraint_group()
     end
 end
 
+function test_expand_affine_allocation_free()
+    # Template: 2 * x[1] + price[i] * x[i] - 1 for i in 1..3
+    # Mixes a literal coefficient, an integer-indexed variable lookup, a
+    # data-array coefficient lookup, and an additive constant — enough to
+    # exercise the `+`, `-`, `*`, and `:getindex` branches.
+    x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+    price = [2.0, 3.0, 5.0]
+    idx = GenOpt.IteratorIndex(1)
+    template = MOI.ScalarNonlinearFunction(
+        :-,
+        Any[
+            MOI.ScalarNonlinearFunction(
+                :+,
+                Any[
+                    MOI.ScalarNonlinearFunction(
+                        :*,
+                        Any[
+                            2.0,
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, 1],
+                            ),
+                        ],
+                    ),
+                    MOI.ScalarNonlinearFunction(
+                        :*,
+                        Any[
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[price, idx],
+                            ),
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, idx],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            1.0,
+        ],
+    )
+    values = Vector{Any}(undef, 1)
+    values[1] = 2  # iterator value
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    sizehint!(out.terms, 2) # final term count for this template
+    # Warm up to force compilation.
+    GenOpt._expand_affine!(out, template, values, 1.0)
+    @test out.constant == -1.0
+    @test length(out.terms) == 2
+    @test out.terms[1].coefficient == 2.0
+    @test out.terms[1].variable.value == 1
+    @test out.terms[2].coefficient == 3.0
+    @test out.terms[2].variable.value == 2
+    # Reset and measure allocations on a sized buffer.
+    empty!(out.terms)
+    out.constant = 0.0
+    allocs = @allocated GenOpt._expand_affine!(out, template, values, 1.0)
+    @test allocs == 0
+end
+
 end  # module
 
 TestBridge.runtests()
