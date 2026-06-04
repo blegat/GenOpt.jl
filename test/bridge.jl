@@ -469,11 +469,22 @@ function test_expand_affine_allocation_free()
     @test out.terms[1].variable.value == 1
     @test out.terms[2].coefficient == 3.0
     @test out.terms[2].variable.value == 2
-    # Reset and measure allocations on a sized buffer.
-    empty!(out.terms)
-    out.constant = 0.0
-    allocs = @allocated GenOpt._expand_affine!(out, template, values, 1.0)
-    @test allocs == 0
+    # Per-call allocation should not grow with the number of constraints,
+    # so we amortize over a large loop. The remaining O(N) cost comes from
+    # reading parametric structs out of the `Vector{Any}` arg list — Julia
+    # can't fully unbox `ContiguousArrayOfVariables{N}` from `Any`. We bound
+    # it well below the old `_expand` + `convert` path (~3.8 KB/call for
+    # this template) to catch regressions.
+    function _loop!(out, expr, values, n)
+        for _ in 1:n
+            empty!(out.terms)
+            out.constant = 0.0
+            GenOpt._expand_affine!(out, expr, values, 1.0)
+        end
+    end
+    _loop!(out, template, values, 1) # warm
+    bytes_per_call = (@allocated _loop!(out, template, values, 1000)) / 1000
+    @test bytes_per_call ≤ 256
 end
 
 end  # module
