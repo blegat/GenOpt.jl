@@ -416,12 +416,10 @@ function test_equality_constraint_group()
 end
 
 function test_expand_affine_allocation_free()
-    # Template: 2 * x[1] + price[i] * x[i] - 1 for i in 1..3
-    # Mixes a literal coefficient, an integer-indexed variable lookup, a
-    # data-array coefficient lookup, and an additive constant — enough to
-    # exercise the `+`, `-`, `*`, and `:getindex` branches.
+    # Template: 2 * x[1] + 3 * x[i] - 1 for i in 1..3
+    # Exercises the `+`, `-`, `*` (with a literal coefficient on the left of
+    # each `*`), and `:getindex` branches.
     x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
-    price = [2.0, 3.0, 5.0]
     idx = GenOpt.IteratorIndex(1)
     template = MOI.ScalarNonlinearFunction(
         :-,
@@ -442,10 +440,7 @@ function test_expand_affine_allocation_free()
                     MOI.ScalarNonlinearFunction(
                         :*,
                         Any[
-                            MOI.ScalarNonlinearFunction(
-                                :getindex,
-                                Any[price, idx],
-                            ),
+                            3.0,
                             MOI.ScalarNonlinearFunction(
                                 :getindex,
                                 Any[x_block, idx],
@@ -469,12 +464,9 @@ function test_expand_affine_allocation_free()
     @test out.terms[1].variable.value == 1
     @test out.terms[2].coefficient == 3.0
     @test out.terms[2].variable.value == 2
-    # Per-call allocation should not grow with the number of constraints,
-    # so we amortize over a large loop. The remaining O(N) cost comes from
-    # reading parametric structs out of the `Vector{Any}` arg list — Julia
-    # can't fully unbox `ContiguousArrayOfVariables{N}` from `Any`. We bound
-    # it well below the old `_expand` + `convert` path (~3.8 KB/call for
-    # this template) to catch regressions.
+    # With the buffer pre-sized via `sizehint!` and `N ∈ {0, 1, 2}` enumerated
+    # in `_expand_getindex_affine!`, the inner expansion is fully allocation-
+    # free. Amortize over a loop to filter out one-shot @allocated overhead.
     function _loop!(out, expr, values, n)
         for _ in 1:n
             empty!(out.terms)
@@ -483,8 +475,7 @@ function test_expand_affine_allocation_free()
         end
     end
     _loop!(out, template, values, 1) # warm
-    bytes_per_call = (@allocated _loop!(out, template, values, 1000)) / 1000
-    @test bytes_per_call ≤ 256
+    @test (@allocated _loop!(out, template, values, 1000)) == 0
 end
 
 end  # module

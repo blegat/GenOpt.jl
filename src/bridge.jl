@@ -211,7 +211,93 @@ end
     return
 end
 
-function _expand_affine!(
+# `@_try_const T x values` expands to `_try_const(T, x, values)`'s isa-chain
+# inline at the call site, returning `nothing` or a `T`. Inlining is required
+# because the helper would otherwise pay one box per call when `x` is `Any`
+# (from `Vector{Any}`) and dispatches into the SNF branch.
+macro _try_const(T, x, values)
+    T, x, values = esc(T), esc(x), esc(values)
+    quote
+        let _x = $x
+            if _x isa $T
+                _x
+            elseif _x isa Int
+                $T(_x)
+            elseif _x isa MOI.VariableIndex
+                nothing
+            elseif _x isa IteratorIndex
+                _v = $values[_x.value]
+                _v isa $T ? _v :
+                    _v isa Int ? $T(_v) :
+                    _v isa Number ? $T(_v) : nothing
+            elseif _x isa MOI.ScalarNonlinearFunction
+                _try_const_snf($T, _x, $values)
+            elseif _x isa Number
+                $T(_x)
+            else
+                nothing
+            end
+        end
+    end
+end
+
+# `@_expand_affine_recurse out arg values coef T` expands inline at the
+# call site to the same isa-chain as `_expand_affine_typed_arg!`. We use a
+# macro (rather than an `@inline` helper) because Julia's inliner declines
+# to inline the helper when it's mutually recursive with `_expand_affine_snf!`,
+# leaving 16 B of function-call overhead per recursion level.
+macro _expand_affine_recurse(out, arg, values, coef, T)
+    out, arg, values, coef, T = esc(out), esc(arg), esc(values), esc(coef), esc(T)
+    quote
+        let _a = $arg
+            if _a isa MOI.ScalarNonlinearFunction
+                _expand_affine_snf!($out, _a, $values, $coef)
+            elseif _a isa MOI.VariableIndex
+                push!($out.terms, MOI.ScalarAffineTerm($coef, _a))
+            elseif _a isa IteratorIndex
+                _expand_affine_typed_arg!($out, $values[_a.value], $values, $coef)
+            elseif _a isa $T
+                _add_constant!($out, $coef * _a)
+            elseif _a isa Int
+                _add_constant!($out, $coef * $T(_a))
+            elseif _a isa Number
+                _add_constant!($out, $coef * $T(_a))
+            else
+                throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{$T}, _a))
+            end
+        end
+    end
+end
+
+# Entry point. `arg` is typically read out of `Vector{Any}` (so its static
+# type is `Any`). Multi-method dispatch on `arg` would pay a per-call
+# allocation for the dispatch tuple; using a single method with a manual
+# `isa` chain keeps the recursion statically resolved and allocation-free.
+@inline function _expand_affine!(
+    out::MOI.ScalarAffineFunction{T},
+    arg,
+    values,
+    coef::T,
+) where {T}
+    if arg isa MOI.ScalarNonlinearFunction
+        _expand_affine_snf!(out, arg::MOI.ScalarNonlinearFunction, values, coef)
+    elseif arg isa MOI.VariableIndex
+        push!(out.terms, MOI.ScalarAffineTerm(coef, arg::MOI.VariableIndex))
+    elseif arg isa IteratorIndex
+        _expand_affine!(out, values[(arg::IteratorIndex).value], values, coef)
+    elseif arg isa T
+        _add_constant!(out, coef * (arg::T))
+    elseif arg isa Int
+        _add_constant!(out, coef * T(arg::Int))
+    elseif arg isa Number
+        _add_constant!(out, coef * T(arg::Number))
+    else
+        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, arg))
+    end
+    return
+end
+
+function _expand_affine_snf!(
     out::MOI.ScalarAffineFunction{T},
     expr::MOI.ScalarNonlinearFunction,
     values,
@@ -221,30 +307,36 @@ function _expand_affine!(
     args = expr.args
     if h === :+
         for a in args
-            _expand_affine!(out, a, values, coef)
+            @_expand_affine_recurse out a values coef T
         end
         return
     elseif h === :-
         n = length(args)
         if n == 2
-            _expand_affine!(out, args[1], values, coef)
-            _expand_affine!(out, args[2], values, -coef)
+            a1, a2 = args[1], args[2]
+            neg_coef = -coef
+            @_expand_affine_recurse out a1 values coef T
+            @_expand_affine_recurse out a2 values neg_coef T
         elseif n == 1
-            _expand_affine!(out, args[1], values, -coef)
+            a1 = args[1]
+            neg_coef = -coef
+            @_expand_affine_recurse out a1 values neg_coef T
         else
             error("Unexpected arity $n for `-`")
         end
         return
     elseif h === :* && length(args) == 2
         a1, a2 = args[1], args[2]
-        c1 = _try_const(T, a1, values)
-        if c1 !== nothing
-            _expand_affine!(out, a2, values, coef * c1)
+        c1 = @_try_const T a1 values
+        if c1 isa T
+            new_coef = coef * c1
+            @_expand_affine_recurse out a2 values new_coef T
             return
         end
-        c2 = _try_const(T, a2, values)
-        if c2 !== nothing
-            _expand_affine!(out, a1, values, coef * c2)
+        c2 = @_try_const T a2 values
+        if c2 isa T
+            new_coef = coef * c2
+            @_expand_affine_recurse out a1 values new_coef T
             return
         end
         throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, expr))
@@ -261,33 +353,48 @@ function _expand_affine!(
     end
 end
 
-function _expand_affine!(
+# Internal recursion helper for SNF children. Mirrors the entry `_expand_affine!`
+# isa-chain but tail-calls back into `_expand_affine_snf!` directly when the
+# child is a `ScalarNonlinearFunction`, so the compiler keeps the dispatch
+# fully static (no allocation per recursive descent).
+@inline function _expand_affine_arg!(
     out::MOI.ScalarAffineFunction{T},
-    x::Number,
+    arg,
     values,
     coef::T,
 ) where {T}
-    _add_constant!(out, coef * T(x))
-    return
+    return _expand_affine_typed_arg!(out, arg, values, coef)
 end
 
-function _expand_affine!(
+# `_expand_affine_typed_arg!` is the common dispatch helper used by the SNF
+# expander to recurse into children. Splitting it from `_expand_affine_arg!`
+# (which is the public entry) lets the SNF expander call into it with the
+# child value typed `Any` *without* an extra function-call hop — the
+# `@inline` is honored inside the SNF expander because there's no recursion
+# of `_expand_affine_arg!` calling itself. For SNF children we go straight
+# to `_expand_affine_snf!` so each `:*` / `:+` level adds zero allocations.
+@inline function _expand_affine_typed_arg!(
     out::MOI.ScalarAffineFunction{T},
-    x::MOI.VariableIndex,
+    arg,
     values,
     coef::T,
 ) where {T}
-    push!(out.terms, MOI.ScalarAffineTerm(coef, x))
+    if arg isa MOI.ScalarNonlinearFunction
+        _expand_affine_snf!(out, arg, values, coef)
+    elseif arg isa MOI.VariableIndex
+        push!(out.terms, MOI.ScalarAffineTerm(coef, arg))
+    elseif arg isa IteratorIndex
+        _expand_affine_typed_arg!(out, values[arg.value], values, coef)
+    elseif arg isa T
+        _add_constant!(out, coef * arg)
+    elseif arg isa Int
+        _add_constant!(out, coef * T(arg))
+    elseif arg isa Number
+        _add_constant!(out, coef * T(arg))
+    else
+        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, arg))
+    end
     return
-end
-
-function _expand_affine!(
-    out::MOI.ScalarAffineFunction{T},
-    x::IteratorIndex,
-    values,
-    coef::T,
-) where {T}
-    return _expand_affine!(out, values[x.value], values, coef)
 end
 
 # Affine `:getindex` dispatcher. Branching on the concrete type of the
@@ -301,11 +408,29 @@ function _expand_getindex_affine!(
     coef::T,
 ) where {T}
     coll = args[1]
-    if coll isa ContiguousArrayOfVariables
-        v = _getindex_concrete(coll, args, values)::MOI.VariableIndex
+    # Narrowing to the *parametric* `ContiguousArrayOfVariables` is not
+    # enough to fully unbox `coll` out of `args::Vector{Any}` — Julia needs
+    # `N` (the arity) to know the struct's size. The branches below pair a
+    # concrete-`N` narrowing with the matching arity-specific getindex helper
+    # so each branch has a single concrete return type (no `Union` boxing).
+    # `N = 0, 1, 2` are enumerated; higher arities pay one box per call.
+    if coll isa ContiguousArrayOfVariables{0}
+        v = getindex(coll)
         push!(out.terms, MOI.ScalarAffineTerm(coef, v))
-    elseif coll isa AbstractArray{T}
-        x = _getindex_concrete(coll, args, values)::T
+    elseif coll isa ContiguousArrayOfVariables{1}
+        v = _getindex_concrete1(coll, args, values)
+        push!(out.terms, MOI.ScalarAffineTerm(coef, v))
+    elseif coll isa ContiguousArrayOfVariables{2}
+        v = _getindex_concrete2(coll, args, values)
+        push!(out.terms, MOI.ScalarAffineTerm(coef, v))
+    elseif coll isa ContiguousArrayOfVariables
+        v = _getindex_concrete(coll, args, values)
+        push!(out.terms, MOI.ScalarAffineTerm(coef, v))
+    elseif coll isa Vector{T}
+        x = _getindex_concrete1(coll, args, values)
+        out.constant += coef * x
+    elseif coll isa Matrix{T}
+        x = _getindex_concrete2(coll, args, values)
         out.constant += coef * x
     elseif coll isa AbstractArray{<:Number}
         x = _getindex_concrete(coll, args, values)
@@ -317,31 +442,43 @@ function _expand_getindex_affine!(
     return
 end
 
-# Resolve a `:getindex` arg list with a concretely-typed collection. Taking
-# `coll` as the first positional argument lets the caller dispatch (e.g.
-# `coll isa ContiguousArrayOfVariables`) so the `getindex` result type is
-# inferable — no boxing on the way back out.
-function _getindex_concrete(coll, args, values)
+# Resolve a `:getindex` arg list with a concretely-typed collection. The
+# caller dispatches on `length(args)` so each leaf method has a single
+# concrete return type (otherwise the union over arities makes Julia box
+# the result).
+@inline function _getindex_concrete(coll, args, values)
     n = length(args) - 1
     if n == 1
-        return getindex(coll, _to_int(args[2], values))
+        return _getindex_concrete1(coll, args, values)
     elseif n == 2
-        return getindex(
-            coll,
-            _to_int(args[2], values),
-            _to_int(args[3], values),
-        )
+        return _getindex_concrete2(coll, args, values)
     elseif n == 3
-        return getindex(
-            coll,
-            _to_int(args[2], values),
-            _to_int(args[3], values),
-            _to_int(args[4], values),
-        )
+        return _getindex_concrete3(coll, args, values)
     else
-        idx = ntuple(k -> _to_int(args[k+1], values), n)
-        return getindex(coll, idx...)
+        return _getindex_concreteN(coll, args, values)
     end
+end
+
+@inline _getindex_concrete1(coll, args, values) =
+    getindex(coll, _to_int(args[2], values))
+
+@inline _getindex_concrete2(coll, args, values) = getindex(
+    coll,
+    _to_int(args[2], values),
+    _to_int(args[3], values),
+)
+
+@inline _getindex_concrete3(coll, args, values) = getindex(
+    coll,
+    _to_int(args[2], values),
+    _to_int(args[3], values),
+    _to_int(args[4], values),
+)
+
+function _getindex_concreteN(coll, args, values)
+    n = length(args) - 1
+    idx = ntuple(k -> _to_int(args[k+1], values), n)
+    return getindex(coll, idx...)
 end
 
 # `coll` here is `Any` (from `args[1]`); used as the slow / fallback path.
@@ -368,22 +505,63 @@ end
 
 # Returns `T(x)` if `x` resolves to a numeric constant (after substituting
 # `IteratorIndex`es from `values`); otherwise `nothing`. Stays type-stable
-# via the small `Union{T,Nothing}` return.
-@inline _try_const(::Type{T}, x::Number, _) where {T} = T(x)
-@inline _try_const(::Type{T}, ::MOI.VariableIndex, _) where {T} = nothing
-@inline function _try_const(::Type{T}, x::IteratorIndex, values) where {T}
-    v = values[x.value]
-    return v isa Number ? T(v) : nothing
+# via the small `Union{T,Nothing}` return. Single-method + manual `isa`
+# chain to keep callers free of dynamic-dispatch allocations.
+function _try_const(::Type{T}, x, values) where {T}
+    # Narrow to the *concrete* type `T` first. For T = Float64 and a literal
+    # 2.0 stored as `Any`, this avoids the dynamic-dispatch `T(::Number)`
+    # conversion path (~32 B / call). We deliberately *don't* annotate the
+    # return type — `::Union{T,Nothing}` forces a runtime `convert`/
+    # `typeassert` that boxes the result. Letting Julia infer the union
+    # from the branches gives the same return type with zero boxing.
+    if x isa T
+        return x
+    elseif x isa Int
+        return T(x)
+    elseif x isa MOI.VariableIndex
+        return nothing
+    elseif x isa IteratorIndex
+        v = values[x.value]
+        if v isa T
+            return v
+        elseif v isa Int
+            return T(v)
+        elseif v isa Number
+            return T(v)
+        else
+            return nothing
+        end
+    elseif x isa MOI.ScalarNonlinearFunction
+        return _try_const_snf(T, x, values)
+    else
+        return nothing
+    end
 end
-function _try_const(
+
+function _try_const_snf(
     ::Type{T},
     expr::MOI.ScalarNonlinearFunction,
     values,
 ) where {T}
     h = expr.head
     if h === :getindex
-        atom = _resolve_getindex(expr.args, values)
-        return atom isa Number ? T(atom) : nothing
+        # Inline-dispatch on the collection so the returned atom has a known
+        # concrete type and the `T(atom)` conversion below is statically
+        # resolved (no boxing).
+        coll = expr.args[1]
+        if coll isa Vector{T}
+            return _getindex_concrete1(coll, expr.args, values)
+        elseif coll isa Matrix{T}
+            return _getindex_concrete2(coll, expr.args, values)
+        elseif coll isa AbstractArray{<:Number}
+            x = _getindex_concrete(coll, expr.args, values)
+            return x isa Number ? T(x::Number) : nothing
+        elseif coll isa ContiguousArrayOfVariables
+            return nothing
+        else
+            atom = _resolve_getindex(expr.args, values)
+            return atom isa T ? atom : (atom isa Number ? T(atom) : nothing)
+        end
     end
     args = expr.args
     n = length(args)
@@ -466,13 +644,36 @@ function _expand_quadratic!(
         return
     elseif h === :getindex
         coll = args[1]
-        if coll isa ContiguousArrayOfVariables
+        # Same trick as `_expand_getindex_affine!`: enumerate the concrete
+        # `N` arities so the load from `Vector{Any}` is allocation-free for
+        # the common cases (`N = 0, 1, 2`).
+        if coll isa ContiguousArrayOfVariables{0}
             v = _getindex_concrete(coll, args, values)
             push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
             return
-        elseif coll isa AbstractArray && eltype(coll) <: Number
+        elseif coll isa ContiguousArrayOfVariables{1}
+            v = _getindex_concrete(coll, args, values)
+            push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
+            return
+        elseif coll isa ContiguousArrayOfVariables{2}
+            v = _getindex_concrete(coll, args, values)
+            push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
+            return
+        elseif coll isa ContiguousArrayOfVariables
+            v = _getindex_concrete(coll, args, values)
+            push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
+            return
+        elseif coll isa Vector{T}
             x = _getindex_concrete(coll, args, values)
-            out.constant += coef * T(x)
+            out.constant += coef * x
+            return
+        elseif coll isa Matrix{T}
+            x = _getindex_concrete(coll, args, values)
+            out.constant += coef * x
+            return
+        elseif coll isa AbstractArray{<:Number}
+            x = _getindex_concrete(coll, args, values)
+            out.constant += coef * T(x::Number)
             return
         else
             atom = _resolve_getindex(args, values)
