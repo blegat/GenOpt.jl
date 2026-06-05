@@ -216,10 +216,8 @@ function test_affine_jump_wrapped_iterator_index()
     # `SNF(:+, [SNF(:getindex, [IteratorIndex(1), 1]), 1])` inside a `:getindex`
     # on `x`. Exercise that path so `_eval_index` resolves it correctly.
     x_block = GenOpt.ContiguousArrayOfVariables(0, (5,))
-    k_idx = MOI.ScalarNonlinearFunction(
-        :getindex,
-        Any[GenOpt.IteratorIndex(1), 1],
-    )
+    k_idx =
+        MOI.ScalarNonlinearFunction(:getindex, Any[GenOpt.IteratorIndex(1), 1])
     k_plus_1 = MOI.ScalarNonlinearFunction(:+, Any[k_idx, 1])
     template = MOI.ScalarNonlinearFunction(
         :+,

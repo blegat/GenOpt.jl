@@ -73,11 +73,7 @@ function _build_function(
     return out
 end
 
-function _build_function(
-    ::Type{MOI.ScalarNonlinearFunction},
-    expr,
-    values,
-)
+function _build_function(::Type{MOI.ScalarNonlinearFunction}, expr, values)
     return _expand(expr, values)
 end
 
@@ -217,7 +213,7 @@ end
 # (from `Vector{Any}`) and dispatches into the SNF branch.
 macro _try_const(T, x, values)
     T, x, values = esc(T), esc(x), esc(values)
-    quote
+    return quote
         let _x = $x
             if _x isa $T
                 _x
@@ -243,15 +239,21 @@ end
 # to inline the helper when it's mutually recursive with `_expand_affine_snf!`,
 # leaving 16 B of function-call overhead per recursion level.
 macro _expand_affine_recurse(out, arg, values, coef, T)
-    out, arg, values, coef, T = esc(out), esc(arg), esc(values), esc(coef), esc(T)
-    quote
+    out, arg, values, coef, T =
+        esc(out), esc(arg), esc(values), esc(coef), esc(T)
+    return quote
         let _a = $arg
             if _a isa MOI.ScalarNonlinearFunction
                 _expand_affine_snf!($out, _a, $values, $coef)
             elseif _a isa MOI.VariableIndex
                 push!($out.terms, MOI.ScalarAffineTerm($coef, _a))
             elseif _a isa IteratorIndex
-                _expand_affine_typed_arg!($out, $values[_a.value], $values, $coef)
+                _expand_affine_typed_arg!(
+                    $out,
+                    $values[_a.value],
+                    $values,
+                    $coef,
+                )
             elseif _a isa $T
                 _add_constant!($out, $coef * _a)
             elseif _a isa Int
@@ -259,7 +261,13 @@ macro _expand_affine_recurse(out, arg, values, coef, T)
             elseif _a isa Number
                 _add_constant!($out, $coef * $T(_a))
             else
-                throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{$T}, _a))
+                throw(
+                    InexactError(
+                        :_expand_affine!,
+                        MOI.ScalarAffineFunction{$T},
+                        _a,
+                    ),
+                )
             end
         end
     end
@@ -458,11 +466,8 @@ end
 @inline _getindex_concrete1(coll, args, values) =
     getindex(coll, _to_int(args[2], values))
 
-@inline _getindex_concrete2(coll, args, values) = getindex(
-    coll,
-    _to_int(args[2], values),
-    _to_int(args[3], values),
-)
+@inline _getindex_concrete2(coll, args, values) =
+    getindex(coll, _to_int(args[2], values), _to_int(args[3], values))
 
 @inline _getindex_concrete3(coll, args, values) = getindex(
     coll,
@@ -540,11 +545,13 @@ function _eval_index(x, values)::Float64
             if n == 2
                 return Float64(getindex(v, _to_int(args[2], values)))
             elseif n == 3
-                return Float64(getindex(
-                    v,
-                    _to_int(args[2], values),
-                    _to_int(args[3], values),
-                ))
+                return Float64(
+                    getindex(
+                        v,
+                        _to_int(args[2], values),
+                        _to_int(args[3], values),
+                    ),
+                )
             else
                 idx = ntuple(k -> _to_int(args[k+1], values), n - 1)
                 return Float64(getindex(v, idx...))
@@ -723,7 +730,13 @@ function _expand_quadratic!(
             out.constant += coef * c
             return
         end
-        throw(InexactError(:_expand_quadratic!, MOI.ScalarQuadraticFunction{T}, expr))
+        throw(
+            InexactError(
+                :_expand_quadratic!,
+                MOI.ScalarQuadraticFunction{T},
+                expr,
+            ),
+        )
     end
 end
 
@@ -781,7 +794,10 @@ function _accumulate_product!(
         for t in saf1.terms
             push!(
                 out.affine_terms,
-                MOI.ScalarAffineTerm(coef * t.coefficient * saf2.constant, t.variable),
+                MOI.ScalarAffineTerm(
+                    coef * t.coefficient * saf2.constant,
+                    t.variable,
+                ),
             )
         end
     end
@@ -789,7 +805,10 @@ function _accumulate_product!(
         for t in saf2.terms
             push!(
                 out.affine_terms,
-                MOI.ScalarAffineTerm(coef * saf1.constant * t.coefficient, t.variable),
+                MOI.ScalarAffineTerm(
+                    coef * saf1.constant * t.coefficient,
+                    t.variable,
+                ),
             )
         end
     end
