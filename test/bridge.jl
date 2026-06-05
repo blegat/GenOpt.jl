@@ -227,13 +227,113 @@ function test_affine_jump_wrapped_iterator_index()
         ],
     )
     out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
-    GenOpt._expand_affine!(out, template, Any[(2,)], 1.0)
+    values = Any[(2,)]
+    GenOpt._expand_affine!(out, template, values, 1.0)
     @test out.constant == 0.0
     @test length(out.terms) == 2
     @test out.terms[1].coefficient == 1.0
     @test out.terms[1].variable == MOI.VariableIndex(2)
     @test out.terms[2].coefficient == 1.0
     @test out.terms[2].variable == MOI.VariableIndex(3)
+end
+
+function test_eval_index_getindex_iterator_index_alloc()
+    # JuMP-wrapped iterator-reference pattern (`SNF(:getindex, [IteratorIndex(k), j])`).
+    # `_eval_index` is intentionally allowed small allocations — see the comment
+    # at its definition: it is called only off the `:getindex` resolution path,
+    # not the affine hot path, so the recursive `Float64` return type isn't
+    # forced to be allocation-free. The bound below is the headroom around the
+    # one box per `Vector{Any}` read (tuple value + arg slot). Tighten if the
+    # implementation later avoids those.
+    expr =
+        MOI.ScalarNonlinearFunction(:getindex, Any[GenOpt.IteratorIndex(1), 1])
+    values = Any[(7,)]
+    @test GenOpt._eval_index(expr, values) === 7.0
+    @test GenOpt._to_int(expr, values) === 7
+    # Warm up before measuring so first-call compilation isn't counted.
+    GenOpt._eval_index(expr, values)
+    GenOpt._to_int(expr, values)
+    @test @allocated(GenOpt._eval_index(expr, values)) <= 64
+    @test @allocated(GenOpt._to_int(expr, values)) <= 64
+end
+
+function test_eval_index_getindex_data_collection()
+    # Covers the `coll isa IteratorIndex ? ... : coll` else branch — used when
+    # an inner index expression itself dereferences a constant data array,
+    # e.g. `vpll_d[some_data[k], s]`.
+    data = [10, 20, 30, 40]
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[data, MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1])],
+    )
+    @test GenOpt._eval_index(expr, [1]) == 20.0
+    @test GenOpt._to_int(expr, [2]) == 30
+end
+
+function test_eval_index_getindex_n3()
+    # Covers the n == 3 (2-D `getindex`) branch of `_eval_index`.
+    mat = [10 20; 30 40]
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[mat, GenOpt.IteratorIndex(1), GenOpt.IteratorIndex(2)],
+    )
+    @test GenOpt._eval_index(expr, Any[2, 1]) == 30.0
+end
+
+function test_eval_index_getindex_nlarge()
+    # Covers the ntuple fallback branch (n > 3). 3-rd order tensor — fallback
+    # path that pays one box per call, so we don't check allocations here.
+    arr = reshape(collect(1:8), (2, 2, 2))
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            arr,
+            GenOpt.IteratorIndex(1),
+            GenOpt.IteratorIndex(2),
+            GenOpt.IteratorIndex(3),
+        ],
+    )
+    @test GenOpt._eval_index(expr, Any[2, 2, 2]) == 8.0
+end
+
+function test_eval_index_unsupported_head_error()
+    # Covers the unsupported-SNF-head error branch. The error message must
+    # NOT call `string(::SNF)` on an SNF containing `IteratorIndex` — that
+    # would trigger an unrelated MOI `_to_string` MethodError and mask the
+    # real "Cannot resolve" message.
+    expr = MOI.ScalarNonlinearFunction(:sin, Any[GenOpt.IteratorIndex(1)])
+    err = try
+        GenOpt._eval_index(expr, Any[(2,)])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    msg = sprint(showerror, err)
+    @test occursin("Cannot resolve `getindex` index", msg)
+    @test occursin(":sin", msg)
+end
+
+function test_eval_index_unsupported_type_error()
+    # Covers the top-level unsupported-type fallback (anything that is not
+    # Integer / AbstractFloat / IteratorIndex / SNF).
+    err = try
+        GenOpt._eval_index(:not_a_number, Any[])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("Symbol", sprint(showerror, err))
+end
+
+function test_to_int_unsupported_type_error()
+    # Same as above for `_to_int`'s top-level fallback.
+    err = try
+        GenOpt._to_int(:not_a_number, Any[])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("Symbol", sprint(showerror, err))
 end
 
 function test_expand_with_variable_in_expr()
