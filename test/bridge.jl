@@ -264,7 +264,10 @@ function test_eval_index_getindex_data_collection()
     data = [10, 20, 30, 40]
     expr = MOI.ScalarNonlinearFunction(
         :getindex,
-        Any[data, MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1])],
+        Any[
+            data,
+            MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1]),
+        ],
     )
     @test GenOpt._eval_index(expr, [1]) == 20.0
     @test GenOpt._to_int(expr, [2]) == 30
