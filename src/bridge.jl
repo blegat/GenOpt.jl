@@ -496,7 +496,7 @@ _resolve_getindex(args, values) = _getindex_concrete(args[1], args, values)
     elseif x isa MOI.ScalarNonlinearFunction
         return Int(_eval_index(x, values))
     else
-        error("Cannot resolve `getindex` index: $x")
+        error("Cannot resolve `getindex` index of type ", typeof(x))
     end
 end
 
@@ -528,11 +528,38 @@ function _eval_index(x, values)::Float64
             return _eval_index(args[1], values) / _eval_index(args[2], values)
         elseif h === :^ && n == 2
             return _eval_index(args[1], values)^_eval_index(args[2], values)
+        elseif h === :getindex && n >= 2
+            # The JuMP wrapper's `prepare(it::IteratorValues)` wraps each
+            # iterator reference as `:getindex(IteratorIndex(k), value_index)`
+            # because the iterator's stored values are tuples (see
+            # `operators.jl::_tuple` / `prepare`). Resolve such inner
+            # `:getindex` nodes here so index expressions like `k + 1` work
+            # under the JuMP-built path.
+            coll = args[1]
+            v = coll isa IteratorIndex ? values[coll.value] : coll
+            if n == 2
+                return Float64(getindex(v, _to_int(args[2], values)))
+            elseif n == 3
+                return Float64(getindex(
+                    v,
+                    _to_int(args[2], values),
+                    _to_int(args[3], values),
+                ))
+            else
+                idx = ntuple(k -> _to_int(args[k+1], values), n - 1)
+                return Float64(getindex(v, idx...))
+            end
         else
-            error("Cannot resolve `getindex` index: $x")
+            error(
+                "Cannot resolve `getindex` index: ScalarNonlinearFunction(:",
+                h,
+                ", ",
+                n,
+                " args)",
+            )
         end
     else
-        error("Cannot resolve `getindex` index: $x")
+        error("Cannot resolve `getindex` index of type ", typeof(x))
     end
 end
 

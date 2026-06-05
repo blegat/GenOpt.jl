@@ -208,6 +208,36 @@ function test_expand_variable()
     @test result == MOI.VariableIndex(2)
 end
 
+function test_affine_jump_wrapped_iterator_index()
+    # The JuMP wrapper's `prepare(it::IteratorValues)` produces SNFs of the form
+    # `SNF(:getindex, [IteratorIndex(k), value_index])` because iterator values
+    # are stored as tuples (so the value is `values[k][value_index]`). A
+    # constraint like `x[k+1] + x[k] == c` produces the index expression
+    # `SNF(:+, [SNF(:getindex, [IteratorIndex(1), 1]), 1])` inside a `:getindex`
+    # on `x`. Exercise that path so `_eval_index` resolves it correctly.
+    x_block = GenOpt.ContiguousArrayOfVariables(0, (5,))
+    k_idx = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[GenOpt.IteratorIndex(1), 1],
+    )
+    k_plus_1 = MOI.ScalarNonlinearFunction(:+, Any[k_idx, 1])
+    template = MOI.ScalarNonlinearFunction(
+        :+,
+        Any[
+            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, k_idx]),
+            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, k_plus_1]),
+        ],
+    )
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    GenOpt._expand_affine!(out, template, Any[(2,)], 1.0)
+    @test out.constant == 0.0
+    @test length(out.terms) == 2
+    @test out.terms[1].coefficient == 1.0
+    @test out.terms[1].variable == MOI.VariableIndex(2)
+    @test out.terms[2].coefficient == 1.0
+    @test out.terms[2].variable == MOI.VariableIndex(3)
+end
+
 function test_expand_with_variable_in_expr()
     func = MOI.ScalarNonlinearFunction(
         :+,
