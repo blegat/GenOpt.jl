@@ -339,6 +339,56 @@ function test_to_int_unsupported_type_error()
     @test occursin("Symbol", sprint(showerror, err))
 end
 
+function test_to_int_abstract_float()
+    # Covers the `_to_int` AbstractFloat branch: a Float index is truncated.
+    @test GenOpt._to_int(2.0, Any[]) === 2
+end
+
+function test_eval_index_abstract_float()
+    # Covers the `_eval_index` AbstractFloat branch.
+    @test GenOpt._eval_index(2.5, Any[]) === 2.5
+end
+
+function test_eval_index_unary_minus()
+    # Covers `:- && n == 1` in `_eval_index`.
+    expr = MOI.ScalarNonlinearFunction(:-, Any[GenOpt.IteratorIndex(1)])
+    @test GenOpt._eval_index(expr, [3]) === -3.0
+end
+
+function test_eval_index_division()
+    # Covers `:/ && n == 2` in `_eval_index`.
+    expr =
+        MOI.ScalarNonlinearFunction(:/, Any[GenOpt.IteratorIndex(1), 2])
+    @test GenOpt._eval_index(expr, [7]) === 3.5
+end
+
+function test_eval_index_pow()
+    # Covers `:^ && n == 2` in `_eval_index`.
+    expr =
+        MOI.ScalarNonlinearFunction(:^, Any[GenOpt.IteratorIndex(1), 3])
+    @test GenOpt._eval_index(expr, [2]) === 8.0
+end
+
+function test_resolve_getindex_fallback()
+    # Covers `_resolve_getindex` (and the `else` branch in
+    # `_expand_getindex_affine!` that calls it). Triggered when the collection
+    # type is not matched by any of the specialized branches — e.g. a
+    # `Vector{Any}` of variables that is neither `ContiguousArrayOfVariables`
+    # nor `AbstractArray{<:Number}`.
+    x = [MOI.VariableIndex(1), MOI.VariableIndex(2), MOI.VariableIndex(3)]
+    coll = convert(Vector{Any}, x)
+    template = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[coll, GenOpt.IteratorIndex(1)],
+    )
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    GenOpt._expand_affine!(out, template, Any[2], 1.0)
+    @test out.constant == 0.0
+    @test length(out.terms) == 1
+    @test out.terms[1].coefficient == 1.0
+    @test out.terms[1].variable == MOI.VariableIndex(2)
+end
+
 function test_expand_with_variable_in_expr()
     func = MOI.ScalarNonlinearFunction(
         :+,
