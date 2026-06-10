@@ -208,6 +208,187 @@ function test_expand_variable()
     @test result == MOI.VariableIndex(2)
 end
 
+function test_affine_jump_wrapped_iterator_index()
+    # The JuMP wrapper's `prepare(it::IteratorValues)` produces SNFs of the form
+    # `SNF(:getindex, [IteratorIndex(k), value_index])` because iterator values
+    # are stored as tuples (so the value is `values[k][value_index]`). A
+    # constraint like `x[k+1] + x[k] == c` produces the index expression
+    # `SNF(:+, [SNF(:getindex, [IteratorIndex(1), 1]), 1])` inside a `:getindex`
+    # on `x`. Exercise that path so `_eval_index` resolves it correctly.
+    x_block = GenOpt.ContiguousArrayOfVariables(0, (5,))
+    k_idx =
+        MOI.ScalarNonlinearFunction(:getindex, Any[GenOpt.IteratorIndex(1), 1])
+    k_plus_1 = MOI.ScalarNonlinearFunction(:+, Any[k_idx, 1])
+    template = MOI.ScalarNonlinearFunction(
+        :+,
+        Any[
+            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, k_idx]),
+            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, k_plus_1]),
+        ],
+    )
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    values = Any[(2,)]
+    GenOpt._expand_affine!(out, template, values, 1.0)
+    @test out.constant == 0.0
+    @test length(out.terms) == 2
+    @test out.terms[1].coefficient == 1.0
+    @test out.terms[1].variable == MOI.VariableIndex(2)
+    @test out.terms[2].coefficient == 1.0
+    @test out.terms[2].variable == MOI.VariableIndex(3)
+end
+
+function test_eval_index_getindex_iterator_index_alloc()
+    # JuMP-wrapped iterator-reference pattern (`SNF(:getindex, [IteratorIndex(k), j])`).
+    # `_eval_index` is intentionally allowed small allocations — see the comment
+    # at its definition: it is called only off the `:getindex` resolution path,
+    # not the affine hot path, so the recursive `Float64` return type isn't
+    # forced to be allocation-free. The bound below is the headroom around the
+    # one box per `Vector{Any}` read (tuple value + arg slot). Tighten if the
+    # implementation later avoids those.
+    expr =
+        MOI.ScalarNonlinearFunction(:getindex, Any[GenOpt.IteratorIndex(1), 1])
+    values = Any[(7,)]
+    @test GenOpt._eval_index(expr, values) === 7.0
+    @test GenOpt._to_int(expr, values) === 7
+    # Warm up before measuring so first-call compilation isn't counted.
+    GenOpt._eval_index(expr, values)
+    GenOpt._to_int(expr, values)
+    @test @allocated(GenOpt._eval_index(expr, values)) <= 64
+    @test @allocated(GenOpt._to_int(expr, values)) <= 64
+end
+
+function test_eval_index_getindex_data_collection()
+    # Covers the `coll isa IteratorIndex ? ... : coll` else branch — used when
+    # an inner index expression itself dereferences a constant data array,
+    # e.g. `vpll_d[some_data[k], s]`.
+    data = [10, 20, 30, 40]
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            data,
+            MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1]),
+        ],
+    )
+    @test GenOpt._eval_index(expr, [1]) == 20.0
+    @test GenOpt._to_int(expr, [2]) == 30
+end
+
+function test_eval_index_getindex_n3()
+    # Covers the n == 3 (2-D `getindex`) branch of `_eval_index`.
+    mat = [10 20; 30 40]
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[mat, GenOpt.IteratorIndex(1), GenOpt.IteratorIndex(2)],
+    )
+    @test GenOpt._eval_index(expr, Any[2, 1]) == 30.0
+end
+
+function test_eval_index_getindex_nlarge()
+    # Covers the ntuple fallback branch (n > 3). 3-rd order tensor — fallback
+    # path that pays one box per call, so we don't check allocations here.
+    arr = reshape(collect(1:8), (2, 2, 2))
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            arr,
+            GenOpt.IteratorIndex(1),
+            GenOpt.IteratorIndex(2),
+            GenOpt.IteratorIndex(3),
+        ],
+    )
+    @test GenOpt._eval_index(expr, Any[2, 2, 2]) == 8.0
+end
+
+function test_eval_index_unsupported_head_error()
+    # Covers the unsupported-SNF-head error branch. The error message must
+    # NOT call `string(::SNF)` on an SNF containing `IteratorIndex` — that
+    # would trigger an unrelated MOI `_to_string` MethodError and mask the
+    # real "Cannot resolve" message.
+    expr = MOI.ScalarNonlinearFunction(:sin, Any[GenOpt.IteratorIndex(1)])
+    err = try
+        GenOpt._eval_index(expr, Any[(2,)])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    msg = sprint(showerror, err)
+    @test occursin("Cannot resolve `getindex` index", msg)
+    @test occursin(":sin", msg)
+end
+
+function test_eval_index_unsupported_type_error()
+    # Covers the top-level unsupported-type fallback (anything that is not
+    # Integer / AbstractFloat / IteratorIndex / SNF).
+    err = try
+        GenOpt._eval_index(:not_a_number, Any[])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("Symbol", sprint(showerror, err))
+end
+
+function test_to_int_unsupported_type_error()
+    # Same as above for `_to_int`'s top-level fallback.
+    err = try
+        GenOpt._to_int(:not_a_number, Any[])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("Symbol", sprint(showerror, err))
+end
+
+function test_to_int_abstract_float()
+    # Covers the `_to_int` AbstractFloat branch: a Float index is truncated.
+    @test GenOpt._to_int(2.0, Any[]) === 2
+end
+
+function test_eval_index_abstract_float()
+    # Covers the `_eval_index` AbstractFloat branch.
+    @test GenOpt._eval_index(2.5, Any[]) === 2.5
+end
+
+function test_eval_index_unary_minus()
+    # Covers `:- && n == 1` in `_eval_index`.
+    expr = MOI.ScalarNonlinearFunction(:-, Any[GenOpt.IteratorIndex(1)])
+    @test GenOpt._eval_index(expr, [3]) === -3.0
+end
+
+function test_eval_index_division()
+    # Covers `:/ && n == 2` in `_eval_index`.
+    expr =
+        MOI.ScalarNonlinearFunction(:/, Any[GenOpt.IteratorIndex(1), 2])
+    @test GenOpt._eval_index(expr, [7]) === 3.5
+end
+
+function test_eval_index_pow()
+    # Covers `:^ && n == 2` in `_eval_index`.
+    expr =
+        MOI.ScalarNonlinearFunction(:^, Any[GenOpt.IteratorIndex(1), 3])
+    @test GenOpt._eval_index(expr, [2]) === 8.0
+end
+
+function test_resolve_getindex_fallback()
+    # Covers `_resolve_getindex` (and the `else` branch in
+    # `_expand_getindex_affine!` that calls it). Triggered when the collection
+    # type is not matched by any of the specialized branches — e.g. a
+    # `Vector{Any}` of variables that is neither `ContiguousArrayOfVariables`
+    # nor `AbstractArray{<:Number}`.
+    x = [MOI.VariableIndex(1), MOI.VariableIndex(2), MOI.VariableIndex(3)]
+    coll = convert(Vector{Any}, x)
+    template = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[coll, GenOpt.IteratorIndex(1)],
+    )
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    GenOpt._expand_affine!(out, template, Any[2], 1.0)
+    @test out.constant == 0.0
+    @test length(out.terms) == 1
+    @test out.terms[1].coefficient == 1.0
+    @test out.terms[1].variable == MOI.VariableIndex(2)
+end
+
 function test_expand_with_variable_in_expr()
     func = MOI.ScalarNonlinearFunction(
         :+,
@@ -413,6 +594,74 @@ function test_equality_constraint_group()
     for xi in x
         @test MOI.get(optimizer, MOI.VariablePrimal(), xi) ≈ 5.0 atol = 1e-6
     end
+end
+
+function test_expand_affine_allocation_free()
+    # Template: 2 * x[1] + price[i] * x[i] - 1 for i in 1..3
+    # Exercises all the relevant branches: `+`, `-`, `*` (literal-on-left,
+    # data-lookup-on-left), `:getindex` on both `ContiguousArrayOfVariables`
+    # and `Vector{Float64}`.
+    x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+    price = [2.0, 3.0, 5.0]
+    idx = GenOpt.IteratorIndex(1)
+    template = MOI.ScalarNonlinearFunction(
+        :-,
+        Any[
+            MOI.ScalarNonlinearFunction(
+                :+,
+                Any[
+                    MOI.ScalarNonlinearFunction(
+                        :*,
+                        Any[
+                            2.0,
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, 1],
+                            ),
+                        ],
+                    ),
+                    MOI.ScalarNonlinearFunction(
+                        :*,
+                        Any[
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[price, idx],
+                            ),
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, idx],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            1.0,
+        ],
+    )
+    values = Vector{Any}(undef, 1)
+    values[1] = 2  # iterator value
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    sizehint!(out.terms, 2) # final term count for this template
+    # Warm up to force compilation.
+    GenOpt._expand_affine!(out, template, values, 1.0)
+    @test out.constant == -1.0
+    @test length(out.terms) == 2
+    @test out.terms[1].coefficient == 2.0
+    @test out.terms[1].variable.value == 1
+    @test out.terms[2].coefficient == 3.0
+    @test out.terms[2].variable.value == 2
+    # With the buffer pre-sized via `sizehint!` and `N ∈ {0, 1, 2}` enumerated
+    # in `_expand_getindex_affine!`, the inner expansion is fully allocation-
+    # free. Amortize over a loop to filter out one-shot @allocated overhead.
+    function _loop!(out, expr, values, n)
+        for _ in 1:n
+            empty!(out.terms)
+            out.constant = 0.0
+            GenOpt._expand_affine!(out, expr, values, 1.0)
+        end
+    end
+    _loop!(out, template, values, 1) # warm
+    @test (@allocated _loop!(out, template, values, 1000)) == 0
 end
 
 end  # module
