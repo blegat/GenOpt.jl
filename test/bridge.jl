@@ -357,15 +357,13 @@ end
 
 function test_eval_index_division()
     # Covers `:/ && n == 2` in `_eval_index`.
-    expr =
-        MOI.ScalarNonlinearFunction(:/, Any[GenOpt.IteratorIndex(1), 2])
+    expr = MOI.ScalarNonlinearFunction(:/, Any[GenOpt.IteratorIndex(1), 2])
     @test GenOpt._eval_index(expr, [7]) === 3.5
 end
 
 function test_eval_index_pow()
     # Covers `:^ && n == 2` in `_eval_index`.
-    expr =
-        MOI.ScalarNonlinearFunction(:^, Any[GenOpt.IteratorIndex(1), 3])
+    expr = MOI.ScalarNonlinearFunction(:^, Any[GenOpt.IteratorIndex(1), 3])
     @test GenOpt._eval_index(expr, [2]) === 8.0
 end
 
