@@ -28,7 +28,7 @@ model = Model()
 using GenOpt
 container = ParametrizedArray
 
-@constraint(model, [i in 1:n], x[1, i] == x0[i], container = container,)
+@constraint(model, [i in 1:n], x[1, i] == x0[i], container = container)
 @constraint(
     model,
     [i in 1:N],
@@ -118,8 +118,10 @@ itr2 = [(j, d(N + 1, j, N)) for j in 1:n]
     lazy_sum(0.5 * Qf[it[1]] * (x[N+1, it[1]] - it[2])^2 for it in itr2),
 )
 
-using MadNLP
-set_optimizer(model, () -> GenOpt.ExaOptimizer(madnlp))
+import MadNLP
+import ExaModels
+# Needs https://github.com/exanauts/ExaModels.jl/pull/237
+set_optimizer(model, () -> ExaModels.Optimizer(MadNLP.madnlp))
 optimize!(model)
 value.(x)
 value.(u)
