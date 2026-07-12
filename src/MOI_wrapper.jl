@@ -83,9 +83,30 @@ function Base.copy(f::SumGenerator{F}) where {F}
     return SumGenerator{F}(copy(f.func), f.iterators)
 end
 
+# Like a `JuMP.GenericNonlinearExpr{V}` but containing no JuMP variables
+# so `V` isn't defined
+struct FilterExpression
+    head::Symbol
+    args::Vector{Any}
+end
+
+struct FilteredSumGenerator{F} <: MOI.AbstractScalarFunction
+    func::MOI.ScalarNonlinearFunction
+    iterators::Vector{Iterator} # Slight type instability, we don't have `Iterator{T}`
+    filter::FilterExpression
+end
+
+function Base.copy(f::FilteredSumGenerator{F}) where {F}
+    return FilteredSumGenerator{F}(copy(f.func), f.iterators, f.filter)
+end
+
+function MOI.Utilities.canonicalize!(s::Union{SumGenerator,FilteredSumGenerator})
+    return MOI.Utilities.canonicalize!(s.func)
+end
+
 function MOI.Utilities.map_indices(
     ::MOI.Utilities.IndexMap,
-    func::Union{FunctionGenerator,SumGenerator},
+    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
 )
     # TODO check it's identity
     return func

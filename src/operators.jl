@@ -114,7 +114,7 @@ function _univariate(f, op, x)
         JuMP.VariableRef, # FIXME needed if `x` is an iterator
     )
     nl = JuMP.GenericNonlinearExpr{V}(op, _expr(x))
-    E = JuMP._MA.promote_operation(f, _type(x))
+    E = MA.promote_operation(f, _type(x))
     return ExprTemplate{E}(nl, _iterators(x))
 end
 
@@ -175,15 +175,15 @@ function _multivariate(f, op, x, y)
     if op == :^ && y == 1
         E = _type(x)
     elseif op == :^ && y == 2
-        E = JuMP._MA.promote_operation(*, _type(x), _type(x))
+        E = MA.promote_operation(*, _type(x), _type(x))
     else
-        E = JuMP._MA.promote_operation(f, _type(x), _type(y))
+        E = MA.promote_operation(f, _type(x), _type(y))
     end
     return ExprTemplate{E}(nl, _check_equal(_iterators(x), _iterators(y)))
 end
 
 # TODO move to JuMP
-function JuMP._MA.promote_operation(
+function MA.promote_operation(
     ::typeof(/),
     ::Type{JuMP.NonlinearExpr},
     ::Type{JuMP.NonlinearExpr},
@@ -252,10 +252,30 @@ function LazySum(template::ExprTemplate{E,V}) where {E,V}
     return LazySum{E,V}(template.expr, template.iterators)
 end
 
-JuMP._is_real(::LazySum) = true
-JuMP.variable_ref_type(s::LazySum) = JuMP.variable_ref_type(s.expr)
-function JuMP.check_belongs_to_model(s::LazySum, model::JuMP.AbstractModel)
+struct FilteredLazySum{E,V<:JuMP.AbstractVariableRef} <: JuMP.AbstractJuMPScalar
+    expr::JuMP.GenericNonlinearExpr{V}
+    iterators::Iterators
+    filter::FilterExpression
+end
+
+function FilteredLazySum(template::ExprTemplate{E,V}, filter::FilterExpression) where {E,V}
+    return FilteredLazySum{E,V}(template.expr, template.iterators, filter)
+end
+
+const _AnyLazySum{E,V} = Union{LazySum{E,V},FilteredLazySum{E,V}}
+
+JuMP._is_real(::_AnyLazySum) = true
+JuMP.variable_ref_type(s::_AnyLazySum) = JuMP.variable_ref_type(s.expr)
+function JuMP.check_belongs_to_model(s::_AnyLazySum, model::JuMP.AbstractModel)
     return JuMP.check_belongs_to_model(s.expr, model)
+end
+
+function MA.promote_operation(
+    ::Union{typeof(+),typeof(-),typeof(*),MA.AddSubMul},
+    ::Type{<:JuMP._GenericAffOrQuadExpr{T,V}},
+    ::Type{<:_AnyLazySum{E,V}},
+) where {T,E,V}
+    return JuMP.GenericNonlinearExpr{V}
 end
 
 function JuMP.moi_function(s::LazySum{E}) where {E}
@@ -265,18 +285,64 @@ function JuMP.moi_function(s::LazySum{E}) where {E}
     )
 end
 
-_iterators(it::Base.Iterators.ProductIterator) = iterators(it.iterators)
-_iterators(it) = iterators((it,))
+function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
+    return FilteredSumGenerator{JuMP.moi_function_type(E)}(
+        JuMP.moi_function(s.expr),
+        s.iterators,
+        s.filter,
+    )
+end
+
+# From the code:
+# `lazy_sum(... for j in 1:n if j == i)`
+# we want to transform the filter into an expression graph `==(i, j)`
+# We don't want to define a method `Base.:(==)(::IteratorValues, ::IteratorValues)`
+# as that method might be used in other places. So we create this wrapper type
+# and we allow ourself to define `Base.:(==)(::_Filtered, ::Any)`
+struct _Filtered{I}
+    iterator::I
+end
+
+Base.getindex(v::Array, i::_Filtered) = _Filtered(_getindex(v, i.iterator))
+
+function Base.:(==)(i::_Filtered, j)
+    return FilterExpression(:(==), Any[i.iterator, j])
+end
+
+# Base.Generator is slightly inconsistent:
+# If there is just one iterator, f and flt are univariate and take the unique iterator
+# (f(i) for i in 1:n if flt(i))
+# Otherwise, it is also univariate but takes a tuple
+# (f((i, j)) for i in 1:n, j in 1:m if flt((i, j)))
+function _untuple_product(is_product::Bool, it)
+    return is_product ? it : only(it)
+end
+
+# lazy_sum(f(i) for i in 1:n)
+function _generator_iterators(it)
+    return false, iterators((it,)), nothing
+end
+# lazy_sum(f(i, j) for i in 1:n, j in 1:m)
+function _generator_iterators(it::Base.Iterators.ProductIterator)
+    return true, iterators(it.iterators), nothing
+end
+# lazy_sum(f(i) for i in ... if flt(i))
+function _generator_iterators(it::Base.Iterators.Filter)
+    # We assert `::Nothing` to avoid nested filters,
+    # we'll only implement it if needed
+    is_product, its, _::Nothing = _generator_iterators(it.itr)
+    return is_product, its, it.flt(_untuple_product(is_product, _Filtered.(its)))
+end
 
 function lazy_sum(gen::Base.Generator)
-    its = _iterators(gen.iter)
-    if gen.iter isa Base.Iterators.ProductIterator
-        template = gen.f(its)
-    else
-        template = gen.f(its[])
-    end
+    is_product, its, filter = _generator_iterators(gen.iter)
+    template = gen.f(_untuple_product(is_product, its))
     @assert template.iterators === first(its).iterators
-    return LazySum(template)
+    if isnothing(filter)
+        return LazySum(template)
+    else
+        return FilteredLazySum(template, filter)
+    end
 end
 
 function _new_values(f, iterators, index)
@@ -295,8 +361,8 @@ function _getindex(d, it::IteratorValues)
     return _new_values(val -> d[val[it.value_index]], it.iterators, it.index)
 end
 
-Base.getindex(d::Dict, i::IteratorValues) = _getindex(d, i)
-Base.getindex(v::Array, i::IteratorValues) = _getindex(v, i)
+Base.getindex(d::Dict, i::_ScalarWithIterator) = _getindex(d, i)
+Base.getindex(v::Array, i::_ScalarWithIterator) = _getindex(v, i)
 
 function Base.getindex(it::IteratorValues, i)
     @assert it.value_index == 1 # FIXME
@@ -310,6 +376,14 @@ function Base.getindex(
 ) where {V<:JuMP.AbstractVariableRef}
     nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), i, _expr(j))
     return ExprTemplate{V}(nl, _iterators(j))
+end
+
+function Base.getindex(
+    v::Array{V},
+    i::_ScalarWithIterator,
+) where {V<:JuMP.AbstractVariableRef}
+    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i))
+    return ExprTemplate{V}(nl, _iterators(i))
 end
 
 function Base.getindex(

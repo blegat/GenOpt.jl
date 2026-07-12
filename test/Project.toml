@@ -1,8 +1,12 @@
 [deps]
+ExaModels = "1037b233-b668-4ce9-9b63-f9f681f55dd2"
 GenOpt = "f2c049d8-7489-4223-990c-4f1c121a4cde"
 HiGHS = "87dc4568-4c63-4d18-b0c0-bb2238e4078b"
 JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
 MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
+NLopt = "76087f3c-5699-56af-9a33-bf431cd00edd"
+PowerModels = "c36e90e8-916a-50a6-bd94-075b64ef4655"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
