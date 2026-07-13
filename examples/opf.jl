@@ -119,15 +119,23 @@ arc_bus = getfield.(data.arc, :bus)
 @constraint(
     model,
     [i in eachindex(bus_id)],
-    bus_pd[i] == -bus_gs[i] * vm[bus_id[i]]^2 +
-    lazy_sum(p[arc_id[j]] for j in eachindex(arc_id) if arc_bus[j] == i) -
+    bus_pd[i] == -bus_gs[i] * vm[bus_id[i]]^2 -
+    lazy_sum(p[arc_id[j]] for j in eachindex(arc_id) if arc_bus[j] == i) +
     lazy_sum(pg[gen_id[j]] for j in eachindex(gen_id) if gen_bus[j] == i),
 )
 
 @constraint(
     model,
     [i in eachindex(bus_id)],
-    bus_qd[i] == bus_bs[i] * vm[bus_id[i]]^2 +
-    lazy_sum(q[arc_id[j]] for j in eachindex(arc_id) if arc_bus[j] == i) -
+    bus_qd[i] == bus_bs[i] * vm[bus_id[i]]^2 -
+    lazy_sum(q[arc_id[j]] for j in eachindex(arc_id) if arc_bus[j] == i) +
     lazy_sum(qg[gen_id[j]] for j in eachindex(gen_id) if gen_bus[j] == i),
 )
+
+import MadNLP
+import ExaModels
+# Needs https://github.com/exanauts/ExaModels.jl/pull/237
+set_optimizer(model, () -> ExaModels.Optimizer(MadNLP.madnlp))
+optimize!(model)
+value.(vm)
+value.(pg)

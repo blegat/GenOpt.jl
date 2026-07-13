@@ -39,6 +39,7 @@ Base.copy(i::IteratorIndex) = i
 function Base.isapprox(a::IteratorIndex, b::IteratorIndex; kwargs...)
     return a.value == b.value
 end
+MOI.Utilities.map_indices(::Function, i::IteratorIndex) = i
 
 struct FunctionGenerator{F} <: MOI.AbstractVectorFunction
     func::MOI.ScalarNonlinearFunction
@@ -100,8 +101,15 @@ function Base.copy(f::FilteredSumGenerator{F}) where {F}
     return FilteredSumGenerator{F}(copy(f.func), f.iterators, f.filter)
 end
 
+function MOI.Utilities.is_canonical(
+    s::Union{SumGenerator,FilteredSumGenerator},
+)
+    return MOI.Utilities.is_canonical(s.func)
+end
+
 function MOI.Utilities.canonicalize!(s::Union{SumGenerator,FilteredSumGenerator})
-    return MOI.Utilities.canonicalize!(s.func)
+    MOI.Utilities.canonicalize!(s.func)
+    return s
 end
 
 function MOI.Utilities.map_indices(
@@ -114,7 +122,7 @@ end
 
 function MOI.Utilities.map_indices(
     ::Function,
-    func::Union{FunctionGenerator,SumGenerator},
+    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
 )
     # TODO check it's identity
     return func
