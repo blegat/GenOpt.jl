@@ -304,6 +304,7 @@ struct _Filtered{I}
 end
 
 Base.getindex(v::Array, i::_Filtered) = _Filtered(_getindex(v, i.iterator))
+Base.getindex(d::Dict, i::_Filtered) = _Filtered(_getindex(d, i.iterator))
 
 function Base.:(==)(i::_Filtered, j)
     return FilterExpression(:(==), Any[i.iterator, j])
