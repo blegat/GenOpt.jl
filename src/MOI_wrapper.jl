@@ -40,9 +40,61 @@ function Base.isapprox(a::IteratorIndex, b::IteratorIndex; kwargs...)
     return a.value == b.value
 end
 
+"""
+    struct IteratorRef
+        iterator::Iterator
+    end
+
+Reference to an [`Iterator`](@ref) by identity, usable in a template
+expression before any generator exists. Unlike the positional
+[`IteratorIndex`](@ref), it does not depend on a generator's iterator list,
+so templates can be built eagerly and the same iterator can be reused across
+generators. The [`FunctionGenerator`](@ref) constructor taking only a
+template discovers the distinct iterators (in first-encounter order) and
+rewrites each `IteratorRef` into the corresponding `IteratorIndex`.
+"""
+struct IteratorRef
+    iterator::Iterator
+end
+
+Base.copy(i::IteratorRef) = i
+function Base.isapprox(a::IteratorRef, b::IteratorRef; kwargs...)
+    return a.iterator === b.iterator
+end
+MOI.Utilities.map_indices(::Function, i::IteratorRef) = i
+
 struct FunctionGenerator{F} <: MOI.AbstractVectorFunction
     func::MOI.ScalarNonlinearFunction
     iterators::Vector{Iterator} # Slight type instability, we don't have `Iterator{T}`
+end
+
+function _index_refs(
+    func::MOI.ScalarNonlinearFunction,
+    positions::IdDict{Iterator,Int},
+    iterators::Vector{Iterator},
+)
+    args = Any[_index_refs(arg, positions, iterators) for arg in func.args]
+    return MOI.ScalarNonlinearFunction(func.head, args)
+end
+
+function _index_refs(
+    ref::IteratorRef,
+    positions::IdDict{Iterator,Int},
+    iterators::Vector{Iterator},
+)
+    position = get!(positions, ref.iterator) do
+        push!(iterators, ref.iterator)
+        return length(iterators)
+    end
+    return IteratorIndex(position)
+end
+
+_index_refs(arg, _, _) = arg
+
+function FunctionGenerator{F}(func::MOI.ScalarNonlinearFunction) where {F}
+    iterators = Iterator[]
+    func = _index_refs(func, IdDict{Iterator,Int}(), iterators)
+    return FunctionGenerator{F}(func, iterators)
 end
 
 function Base.copy(f::FunctionGenerator{F}) where {F}
