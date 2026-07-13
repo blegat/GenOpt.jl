@@ -340,7 +340,9 @@ end
 function _generator_iterators(it::Base.Iterators.Filter)
     # We assert `::Nothing` to avoid nested filters,
     # we'll only implement it if needed
-    is_product, its, _::Nothing = _generator_iterators(it.itr)
+    # (typed `_` destructuring would need Julia 1.12; we support 1.10)
+    is_product, its, inner_filter = _generator_iterators(it.itr)
+    inner_filter::Nothing
     return is_product, its, it.flt(_untuple_product(is_product, _Filtered.(its)))
 end
 
