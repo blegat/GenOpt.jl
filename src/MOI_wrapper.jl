@@ -127,3 +127,18 @@ function MOI.Utilities.map_indices(
     # TODO check it's identity
     return func
 end
+
+"""
+    VectorInterval{T} <: MOI.AbstractVectorSet
+
+Vector set `{x : lower[k] ≤ x[k] ≤ upper[k]}` carrying *per-element* bounds. Used as the set
+of a [`FunctionGenerator`](@ref) built from an interval constraint `lb[i] ≤ f(i) ≤ ub[i]`
+(with `container = ParametrizedArray`), where the bounds `lb`/`ub` vary with the iterator `i`.
+"""
+struct VectorInterval{T} <: MOI.AbstractVectorSet
+    lower::Vector{T}
+    upper::Vector{T}
+end
+
+MOI.dimension(s::VectorInterval) = length(s.lower)
+Base.copy(s::VectorInterval) = VectorInterval(copy(s.lower), copy(s.upper))
