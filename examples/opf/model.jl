@@ -50,6 +50,8 @@ function build_model(pm::Dict)
     t_idx = Dict{Int,Int}()
     f_bus = Dict{Int,Int}()
     t_bus = Dict{Int,Int}()
+    angmin = Dict{Int,Float64}()
+    angmax = Dict{Int,Float64}()
     for (k, branch) in ref[:branch]
         g[k], b[k] = PowerModels.calc_branch_y(branch)
         tr[k], ti[k] = PowerModels.calc_branch_t(branch)
@@ -63,6 +65,8 @@ function build_model(pm::Dict)
         t_idx[k] = arcdict[(k, branch["t_bus"], branch["f_bus"])]
         f_bus[k] = branch["f_bus"]
         t_bus[k] = branch["t_bus"]
+        angmin[k] = branch["angmin"]
+        angmax[k] = branch["angmax"]
     end
 
     ref_buses = collect(keys(ref[:ref_buses]))
@@ -129,6 +133,13 @@ function build_model(pm::Dict)
         (vm[t_bus[i]] * vm[f_bus[i]] * cos(va[t_bus[i]] - va[f_bus[i]])) ==
         (-g[i] * tr[i] - b[i] * ti[i]) / ttm[i] *
         (vm[t_bus[i]] * vm[f_bus[i]] * sin(va[t_bus[i]] - va[f_bus[i]])),
+        container = container,
+    )
+
+    @constraint(
+        model,
+        [i in keys(ref[:branch])],
+        angmin[i] <= va[f_bus[i]] - va[t_bus[i]] <= angmax[i],
         container = container,
     )
 
