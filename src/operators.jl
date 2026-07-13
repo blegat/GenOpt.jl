@@ -285,6 +285,10 @@ function JuMP.moi_function(s::LazySum{E}) where {E}
     )
 end
 
+function JuMP.jump_function_type(model::JuMP.GenericModel, ::Type{SumGenerator{F}}) where {F}
+    return LazySum{JuMP.jump_function_type(model, F),JuMP.variable_ref_type(model)}
+end
+
 function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
     return FilteredSumGenerator{JuMP.moi_function_type(E)}(
         JuMP.moi_function(s.expr),
@@ -292,6 +296,11 @@ function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
         s.filter,
     )
 end
+
+function JuMP.jump_function_type(model::JuMP.GenericModel, ::Type{FilteredSumGenerator{F}}) where {F}
+    return FilteredLazySum{JuMP.jump_function_type(model, F),JuMP.variable_ref_type(model)}
+end
+
 
 # From the code:
 # `lazy_sum(... for j in 1:n if j == i)`
