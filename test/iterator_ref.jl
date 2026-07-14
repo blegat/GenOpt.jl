@@ -21,8 +21,9 @@ function runtests()
     return
 end
 
-_getindex(collection, index) =
-    MOI.ScalarNonlinearFunction(:getindex, Any[collection, index])
+function _getindex(collection, index)
+    return MOI.ScalarNonlinearFunction(:getindex, Any[collection, index])
+end
 
 function test_discovers_iterators_in_first_encounter_order()
     i = GenOpt.Iterator(1:3)
@@ -36,13 +37,20 @@ function test_discovers_iterators_in_first_encounter_order()
             Any[
                 MOI.ScalarNonlinearFunction(
                     :*,
-                    Any[2.0, MOI.ScalarNonlinearFunction(:-, Any[GenOpt.IteratorRef(j), 1.0])],
+                    Any[
+                        2.0,
+                        MOI.ScalarNonlinearFunction(
+                            :-,
+                            Any[GenOpt.IteratorRef(j), 1.0],
+                        ),
+                    ],
                 ),
                 GenOpt.IteratorRef(i),
             ],
         ),
     )
-    generator = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(template)
+    generator =
+        GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(template)
     @test generator.iterators == [j, i]
     @test MOI.output_dimension(generator) == 6
     # j was encountered first, i second
@@ -57,9 +65,13 @@ function test_same_iterator_twice_is_diagonal()
     # x[i] + x[i]: the same iterator must map to the same index
     template = MOI.ScalarNonlinearFunction(
         :+,
-        Any[_getindex(x, GenOpt.IteratorRef(i)), _getindex(x, GenOpt.IteratorRef(i))],
+        Any[
+            _getindex(x, GenOpt.IteratorRef(i)),
+            _getindex(x, GenOpt.IteratorRef(i)),
+        ],
     )
-    generator = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(template)
+    generator =
+        GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(template)
     @test generator.iterators == [i]
     @test MOI.output_dimension(generator) == 3
 end
@@ -88,7 +100,8 @@ function test_solve_through_bridge()
     MOI.set(optimizer, MOI.ObjectiveFunction{typeof(obj)}(), obj)
     MOI.optimize!(optimizer)
     @test MOI.get(optimizer, MOI.TerminationStatus()) == MOI.OPTIMAL
-    @test MOI.get(optimizer, MOI.VariablePrimal(), x) ≈ [1.0, 2.0, 3.0] atol = 1e-6
+    @test MOI.get(optimizer, MOI.VariablePrimal(), x) ≈ [1.0, 2.0, 3.0] atol =
+        1e-6
 end
 
 end  # module
