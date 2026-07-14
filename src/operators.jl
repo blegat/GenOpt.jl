@@ -91,11 +91,11 @@ function Base.show(io::IO, i::IteratorValues)
 end
 
 function _tuple(axe)
-    if axe[1] isa Tuple
+    # axe can also be `keys(dict)`
+    if !isempty(axe) && first(axe) isa Tuple
         return axe
-    else
-        return tuple.(axe)
     end
+    return tuple.(axe)
 end
 
 function iterators(axes)
