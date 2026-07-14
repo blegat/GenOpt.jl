@@ -295,8 +295,8 @@ function _getindex(d, it::IteratorValues)
     return _new_values(val -> d[val[it.value_index]], it.iterators, it.index)
 end
 
-Base.getindex(d::Dict, i::IteratorValues) = _getindex(d, i)
-Base.getindex(v::Array, i::IteratorValues) = _getindex(v, i)
+Base.getindex(d::Dict, i::_ScalarWithIterator) = _getindex(d, i)
+Base.getindex(v::Array, i::_ScalarWithIterator) = _getindex(v, i)
 
 function Base.getindex(it::IteratorValues, i)
     @assert it.value_index == 1 # FIXME
