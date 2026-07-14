@@ -39,6 +39,7 @@ Base.copy(i::IteratorIndex) = i
 function Base.isapprox(a::IteratorIndex, b::IteratorIndex; kwargs...)
     return a.value == b.value
 end
+MOI.Utilities.map_indices(::Function, i::IteratorIndex) = i
 
 struct FunctionGenerator{F} <: MOI.AbstractVectorFunction
     func::MOI.ScalarNonlinearFunction
