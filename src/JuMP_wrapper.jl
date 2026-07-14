@@ -80,6 +80,10 @@ function JuMP.moi_function(f::ExprGenerator{E}) where {E}
     )
 end
 
+function JuMP.jump_function_type(model, ::Type{FunctionGenerator{F}}) where {F}
+    return ExprGenerator{JuMP.jump_function_type(model, F),JuMP.variable_ref_type(model)}
+end
+
 function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
     return ExprGenerator(
         ExprTemplate{JuMP.jump_function_type(model, F)}(
