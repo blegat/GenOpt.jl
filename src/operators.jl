@@ -315,6 +315,14 @@ end
 function Base.getindex(
     v::Array{V},
     i::_ScalarWithIterator,
+) where {V<:JuMP.AbstractVariableRef}
+    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i))
+    return ExprTemplate{V}(nl, _iterators(i))
+end
+
+function Base.getindex(
+    v::Array{V},
+    i::_ScalarWithIterator,
     j::Integer,
 ) where {V<:JuMP.AbstractVariableRef}
     nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i), j)
