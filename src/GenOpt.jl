@@ -5,6 +5,8 @@
 
 module GenOpt
 
+import MutableArithmetics as MA
+
 include("MOI_wrapper.jl")
 include("bridge.jl")
 include("JuMP_wrapper.jl")
