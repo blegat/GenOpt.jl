@@ -65,6 +65,32 @@ function test_multivariate()
     @test ijxx isa GenOpt.ExprTemplate{JuMP.QuadExpr,JuMP.VariableRef}
 end
 
+function _model()
+    inner = HiGHS.Optimizer()
+    MOI.set(inner, MOI.Silent(), true)
+    optimizer = MOI.Bridges.full_bridge_optimizer(inner, Float64)
+    MOI.Bridges.add_bridge(optimizer, GenOpt.FunctionGeneratorBridge{Float64})
+    return JuMP.direct_model(optimizer)
+end
+
+function test_shifted_index_into_variable_vector()
+    rhs = [1.0, 2.0]
+    model = _model()
+    JuMP.@variable(model, x[1:3] >= 0)
+    JuMP.@objective(model, Min, sum(x))
+    JuMP.@constraint(
+        model,
+        [i in 1:2],
+        x[i+1] >= rhs[i],
+        container = GenOpt.ParametrizedArray,
+    )
+    JuMP.optimize!(model)
+    @test JuMP.termination_status(model) == MOI.OPTIMAL
+    # x[1] hits its 0 bound, x[2] >= 1, x[3] >= 2.
+    @test JuMP.value.(x) ≈ [0.0, 1.0, 2.0]
+    @test JuMP.objective_value(model) ≈ 3.0
+end
+
 end  # module
 
 TestOperators.runtests()
