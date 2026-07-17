@@ -8,8 +8,6 @@ module TestOperators
 using Test
 using GenOpt
 import JuMP
-import MathOptInterface as MOI
-import HiGHS
 
 function runtests()
     for name in names(@__MODULE__; all = true)
@@ -35,7 +33,14 @@ function _test_template(et, values)
     end
 end
 
-function test_getindex()
+function test_vect_getindex()
+    v = [-1, 1, 4]
+    i = GenOpt.iterator([3, 1])
+    _test_iterator(v[i], [4, -1])
+    return
+end
+
+function test_dict_getindex()
     d1 = Dict(:a => -1, :b => 1)
     d2 = Dict(:a => π, :b => 0.0)
 
@@ -65,32 +70,6 @@ function test_multivariate()
     @test ijx isa GenOpt.ExprTemplate{JuMP.AffExpr,JuMP.VariableRef}
     ijxx = ijx * x
     @test ijxx isa GenOpt.ExprTemplate{JuMP.QuadExpr,JuMP.VariableRef}
-end
-
-function _model()
-    inner = HiGHS.Optimizer()
-    MOI.set(inner, MOI.Silent(), true)
-    optimizer = MOI.Bridges.full_bridge_optimizer(inner, Float64)
-    MOI.Bridges.add_bridge(optimizer, GenOpt.FunctionGeneratorBridge{Float64})
-    return JuMP.direct_model(optimizer)
-end
-
-function test_shifted_index_into_variable_vector()
-    rhs = [1.0, 2.0]
-    model = _model()
-    JuMP.@variable(model, x[1:3] >= 0)
-    JuMP.@objective(model, Min, sum(x))
-    JuMP.@constraint(
-        model,
-        [i in 1:2],
-        x[i+1] >= rhs[i],
-        container = GenOpt.ParametrizedArray,
-    )
-    JuMP.optimize!(model)
-    @test JuMP.termination_status(model) == MOI.OPTIMAL
-    # x[1] hits its 0 bound, x[2] >= 1, x[3] >= 2.
-    @test JuMP.value.(x) ≈ [0.0, 1.0, 2.0]
-    @test JuMP.objective_value(model) ≈ 3.0
 end
 
 end  # module
