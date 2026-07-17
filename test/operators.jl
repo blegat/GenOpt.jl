@@ -13,6 +13,7 @@ using Test
 using GenOpt
 import JuMP
 import MathOptInterface as MOI
+import HiGHS
 
 function runtests()
     for name in names(@__MODULE__; all = true)
