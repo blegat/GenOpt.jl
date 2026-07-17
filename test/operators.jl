@@ -8,6 +8,7 @@ module TestOperators
 using Test
 using GenOpt
 import JuMP
+import HiGHS
 
 function runtests()
     for name in names(@__MODULE__; all = true)
