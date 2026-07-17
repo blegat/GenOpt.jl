@@ -34,17 +34,37 @@ end
 # functions) into a list of `(sign, term)`. Affine and quadratic terms are
 # emitted in the canonical forms `coef * x` and `coef * x * y` so that the
 # same term shape is obtained regardless of the function type it came from.
-function _flatten!(list::Vector{Tuple{Bool,Any}}, sign::Bool, f::MOI.ScalarAffineFunction)
+function _flatten!(
+    list::Vector{Tuple{Bool,Any}},
+    sign::Bool,
+    f::MOI.ScalarAffineFunction,
+)
     for t in f.terms
-        push!(list, (sign, MOI.ScalarNonlinearFunction(:*, Any[t.coefficient, t.variable])))
+        push!(
+            list,
+            (
+                sign,
+                MOI.ScalarNonlinearFunction(:*, Any[t.coefficient, t.variable]),
+            ),
+        )
     end
     push!(list, (sign, f.constant))
     return
 end
 
-function _flatten!(list::Vector{Tuple{Bool,Any}}, sign::Bool, f::MOI.ScalarQuadraticFunction)
+function _flatten!(
+    list::Vector{Tuple{Bool,Any}},
+    sign::Bool,
+    f::MOI.ScalarQuadraticFunction,
+)
     for t in f.affine_terms
-        push!(list, (sign, MOI.ScalarNonlinearFunction(:*, Any[t.coefficient, t.variable])))
+        push!(
+            list,
+            (
+                sign,
+                MOI.ScalarNonlinearFunction(:*, Any[t.coefficient, t.variable]),
+            ),
+        )
     end
     for t in f.quadratic_terms
         # MOI convention: a diagonal `ScalarQuadraticTerm(q, x, x)` contributes
@@ -52,14 +72,24 @@ function _flatten!(list::Vector{Tuple{Bool,Any}}, sign::Bool, f::MOI.ScalarQuadr
         coef = t.variable_1 == t.variable_2 ? t.coefficient / 2 : t.coefficient
         push!(
             list,
-            (sign, MOI.ScalarNonlinearFunction(:*, Any[coef, t.variable_1, t.variable_2])),
+            (
+                sign,
+                MOI.ScalarNonlinearFunction(
+                    :*,
+                    Any[coef, t.variable_1, t.variable_2],
+                ),
+            ),
         )
     end
     push!(list, (sign, f.constant))
     return
 end
 
-function _flatten!(list::Vector{Tuple{Bool,Any}}, sign::Bool, f::MOI.ScalarNonlinearFunction)
+function _flatten!(
+    list::Vector{Tuple{Bool,Any}},
+    sign::Bool,
+    f::MOI.ScalarNonlinearFunction,
+)
     if f.head == :+
         for arg in f.args
             _flatten!(list, sign, arg)
@@ -86,7 +116,14 @@ _rhs(set::MOI.LessThan) = set.upper, :nonpositives
 _rhs(set::MOI.GreaterThan) = set.lower, :nonnegatives
 
 function _decompose(nlp, variable_to_column, func, set::MOI.Interval, T)
-    return _row(nlp, variable_to_column, Tuple{Bool,Any}[(true, func)], set.lower, set.upper, T),
+    return _row(
+        nlp,
+        variable_to_column,
+        Tuple{Bool,Any}[(true, func)],
+        set.lower,
+        set.upper,
+        T,
+    ),
     :interval
 end
 
@@ -104,7 +141,11 @@ function _row(nlp, variable_to_column, list, lower, upper, ::Type{T}) where {T}
     end
     for (sign, f) in flat
         expr = MOI.Nonlinear.parse_expression(nlp, f)
-        sym = MOI.Nonlinear.SymbolicAD._to_symbolic_form(nlp, expr, variable_to_column)
+        sym = MOI.Nonlinear.SymbolicAD._to_symbolic_form(
+            nlp,
+            expr,
+            variable_to_column,
+        )
         instance = _TermInstance(sym.f, sym.ordered_variables, sym.data)
         push!(get!(() -> _TermInstance[], terms, (sign, sym.hash)), instance)
     end
@@ -117,7 +158,8 @@ end
 # makes them varying-multiplicity terms handled by a `FilteredSumGenerator`
 # (e.g. the shunt or generator terms of a power balance, absent on some buses).
 function _merge_families(families::Vector{_Family{T}}) where {T}
-    order = sortperm(families; by = f -> (-length(f.keys), sort!(collect(f.keys))))
+    order =
+        sortperm(families; by = f -> (-length(f.keys), sort!(collect(f.keys))))
     merged = _Family{T}[]
     for f in families[order]
         k = findfirst(g -> g.kind == f.kind && f.keys ⊆ g.keys, merged)
@@ -145,19 +187,20 @@ function _template(v::MOI.VariableIndex, array, xoffset, doffset)
     if v.value > 0
         idx = MOI.ScalarNonlinearFunction(
             :getindex,
-            Any[IteratorIndex(1), xoffset + v.value],
+            Any[IteratorIndex(1), xoffset+v.value],
         )
         return MOI.ScalarNonlinearFunction(:getindex, Any[array, idx])
     else
         return MOI.ScalarNonlinearFunction(
             :getindex,
-            Any[IteratorIndex(1), doffset - v.value],
+            Any[IteratorIndex(1), doffset-v.value],
         )
     end
 end
 
-_signed(template, sign::Bool) =
-    sign ? template : MOI.ScalarNonlinearFunction(:-, Any[template])
+function _signed(template, sign::Bool)
+    return sign ? template : MOI.ScalarNonlinearFunction(:-, Any[template])
+end
 
 function _generator(family, key, array, outer_iterators, rowid_slot)
     sign, _ = key
@@ -196,16 +239,24 @@ function _vector_set(family::_Family{T}) where {T}
     elseif family.kind == :nonnegatives
         return MOI.Nonnegatives(n)
     else
-        return VectorInterval([row.lower for row in family.rows], [row.upper for row in family.rows])
+        return VectorInterval(
+            [row.lower for row in family.rows],
+            [row.upper for row in family.rows],
+        )
     end
 end
 
 function _add_family(dest, family::_Family, array)
     keys_sorted = sort!(collect(family.keys))
-    counts = [length(get(() -> _TermInstance[], first(family.rows).terms, key)) for key in keys_sorted]
+    counts = [
+        length(get(() -> _TermInstance[], first(family.rows).terms, key))
+        for key in keys_sorted
+    ]
     is_base = [
-        all(length(get(() -> _TermInstance[], row.terms, key)) == counts[k] for row in family.rows)
-        for (k, key) in enumerate(keys_sorted)
+        all(
+            length(get(() -> _TermInstance[], row.terms, key)) == counts[k]
+            for row in family.rows
+        ) for (k, key) in enumerate(keys_sorted)
     ]
     # rows: the slot blocks of the base occurrences, then the row id used by
     # the generator filters
@@ -242,10 +293,19 @@ function _add_family(dest, family::_Family, array)
                 instance = first(first(family.rows).terms[key])
                 xoffset = offsets[i]
                 doffset = offsets[i] + length(instance.x)
-                push!(args, _signed(_template(instance.f, array, xoffset, doffset), sign))
+                push!(
+                    args,
+                    _signed(
+                        _template(instance.f, array, xoffset, doffset),
+                        sign,
+                    ),
+                )
             end
         else
-            push!(args, _generator(family, key, array, outer_iterators, rowid_slot))
+            push!(
+                args,
+                _generator(family, key, array, outer_iterators, rowid_slot),
+            )
         end
     end
     generator = FunctionGenerator{MOI.ScalarNonlinearFunction}(
@@ -338,7 +398,10 @@ function regroup(src::MOI.ModelLike; T::Type = Float64)
             else
                 MOI.add_constraint(
                     dest,
-                    MOI.Utilities.map_indices(Base.Fix1(getindex, varmap), func),
+                    MOI.Utilities.map_indices(
+                        Base.Fix1(getindex, varmap),
+                        func,
+                    ),
                     copy(set),
                 )
             end

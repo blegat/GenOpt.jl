@@ -23,7 +23,12 @@ const FORMULATIONS = [
 ]
 
 function _powermodels_moi(case::String, F)
-    dir = joinpath(dirname(dirname(pathof(PowerModels))), "test", "data", "matpower")
+    dir = joinpath(
+        dirname(dirname(pathof(PowerModels))),
+        "test",
+        "data",
+        "matpower",
+    )
     data = PowerModels.parse_file(joinpath(dir, case))
     PowerModels.standardize_cost_terms!(data, order = 2)
     PowerModels.calc_thermal_limits!(data)
@@ -44,7 +49,10 @@ const _SCALAR_SETS = Union{
 # for `EqualTo`/`LessThan`/`GreaterThan`, and `Interval` rows are `(g, l, u)`
 # triples.
 function _scalar_residuals(model, x::Vector{Float64})
-    val = Dict(vi => x[i] for (i, vi) in enumerate(MOI.get(model, MOI.ListOfVariableIndices())))
+    val = Dict(
+        vi => x[i] for
+        (i, vi) in enumerate(MOI.get(model, MOI.ListOfVariableIndices()))
+    )
     residuals = Float64[]
     intervals = Tuple{Float64,Float64,Float64}[]
     n = 0
@@ -55,7 +63,11 @@ function _scalar_residuals(model, x::Vector{Float64})
         for ci in MOI.get(model, MOI.ListOfConstraintIndices{F,S}())
             func = MOI.get(model, MOI.ConstraintFunction(), ci)
             set = MOI.get(model, MOI.ConstraintSet(), ci)
-            g = MOI.Utilities.eval_variables(Base.Fix1(getindex, val), model, func)
+            g = MOI.Utilities.eval_variables(
+                Base.Fix1(getindex, val),
+                model,
+                func,
+            )
             n += 1
             if set isa MOI.Interval{Float64}
                 push!(intervals, (g, set.lower, set.upper))
@@ -71,7 +83,10 @@ end
 # each group is expanded back to a scalar function with `GenOpt._expand` and
 # evaluated.
 function _group_residuals(model, x::Vector{Float64})
-    val = Dict(vi => x[i] for (i, vi) in enumerate(MOI.get(model, MOI.ListOfVariableIndices())))
+    val = Dict(
+        vi => x[i] for
+        (i, vi) in enumerate(MOI.get(model, MOI.ListOfVariableIndices()))
+    )
     residuals = Float64[]
     intervals = Tuple{Float64,Float64,Float64}[]
     ngroups = 0
@@ -86,12 +101,17 @@ function _group_residuals(model, x::Vector{Float64})
             ngroups += 1
             for (r, row) in enumerate(only(func.iterators).values)
                 scalar = GenOpt._expand(func.func, [row])
-                g = MOI.Utilities.eval_variables(Base.Fix1(getindex, val), model, scalar)
+                g = MOI.Utilities.eval_variables(
+                    Base.Fix1(getindex, val),
+                    model,
+                    scalar,
+                )
                 nrows += 1
                 if set isa GenOpt.VectorInterval{Float64}
                     push!(intervals, (g, set.lower[r], set.upper[r]))
                 else
-                    @assert set isa Union{MOI.Zeros,MOI.Nonpositives,MOI.Nonnegatives}
+                    @assert set isa
+                            Union{MOI.Zeros,MOI.Nonpositives,MOI.Nonnegatives}
                     push!(residuals, g)
                 end
             end
@@ -147,7 +167,8 @@ function test_variable_data_passthrough()
     dest = GenOpt.regroup(src)
     @test MOI.get(dest, MOI.NumberOfVariables()) ==
           MOI.get(src, MOI.NumberOfVariables())
-    @test MOI.get(dest, MOI.ObjectiveSense()) == MOI.get(src, MOI.ObjectiveSense())
+    @test MOI.get(dest, MOI.ObjectiveSense()) ==
+          MOI.get(src, MOI.ObjectiveSense())
     # variable bounds are copied as-is
     for S in (MOI.GreaterThan{Float64}, MOI.LessThan{Float64})
         @test MOI.get(dest, MOI.NumberOfConstraints{MOI.VariableIndex,S}()) ==
