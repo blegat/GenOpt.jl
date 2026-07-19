@@ -85,10 +85,10 @@ end
 
 _index_refs(arg, _, _) = arg
 
-function FunctionGenerator{F}(func::MOI.ScalarNonlinearFunction) where {F}
+function collect_iterator_refs(func::MOI.ScalarNonlinearFunction) where {F}
     iterators = Iterator[]
     func = _index_refs(func, IdDict{Iterator,Int}(), iterators)
-    return FunctionGenerator{F}(func, iterators)
+    return func, iterators
 end
 
 function Base.copy(f::FunctionGenerator{F}) where {F}
