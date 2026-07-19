@@ -25,6 +25,11 @@ function _getindex(collection, index)
     return MOI.ScalarNonlinearFunction(:getindex, Any[collection, index])
 end
 
+function _aff(func)
+    f, it = GenOpt.collect_iterator_refs(func)
+    return GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(f, it)
+end
+
 function test_discovers_iterators_in_first_encounter_order()
     i = GenOpt.Iterator(1:3)
     j = GenOpt.Iterator(1:2)
@@ -49,8 +54,7 @@ function test_discovers_iterators_in_first_encounter_order()
             ],
         ),
     )
-    generator =
-        GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(template)
+    generator = _aff(template)
     @test generator.iterators == [j, i]
     @test MOI.output_dimension(generator) == 6
     # j was encountered first, i second
@@ -70,8 +74,7 @@ function test_same_iterator_twice_is_diagonal()
             _getindex(x, GenOpt.IteratorRef(i)),
         ],
     )
-    generator =
-        GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(template)
+    generator = _aff(template)
     @test generator.iterators == [i]
     @test MOI.output_dimension(generator) == 3
 end
@@ -89,8 +92,7 @@ function test_solve_through_bridge()
         :-,
         Any[_getindex(block, GenOpt.IteratorRef(i)), GenOpt.IteratorRef(i)],
     )
-    generator =
-        GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(template)
+    generator = _aff(template)
     MOI.add_constraint(optimizer, generator, MOI.Nonnegatives(3))
     obj = MOI.ScalarAffineFunction(
         [MOI.ScalarAffineTerm(1.0, xi) for xi in x],
