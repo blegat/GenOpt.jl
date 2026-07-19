@@ -57,12 +57,6 @@ struct IteratorRef
     iterator::Iterator
 end
 
-Base.copy(i::IteratorRef) = i
-function Base.isapprox(a::IteratorRef, b::IteratorRef; kwargs...)
-    return a.iterator === b.iterator
-end
-MOI.Utilities.map_indices(::Function, i::IteratorRef) = i
-
 struct FunctionGenerator{F} <: MOI.AbstractVectorFunction
     func::MOI.ScalarNonlinearFunction
     iterators::Vector{Iterator} # Slight type instability, we don't have `Iterator{T}`
