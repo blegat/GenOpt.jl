@@ -44,6 +44,17 @@ function test_getindex()
     return
 end
 
+function test_filtered_dict()
+    # `lazy_sum(... if dict[j] == i)` must support a `Dict` in the filter, not just a
+    # `Vector` (used e.g. in the OPF example for `arc_bus`/`gen_bus` maps).
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    grp = Dict(1 => 1, 2 => 1, 3 => 2)
+    s = GenOpt.lazy_sum(x[j] for j in 1:3 if grp[j] == 1)
+    @test s isa GenOpt.FilteredLazySum
+    return
+end
+
 function test_univariate()
     i = GenOpt.iterator([2, -3])
     _test_template(+i, [2, -3])
