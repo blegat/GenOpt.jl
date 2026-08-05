@@ -80,6 +80,10 @@ function JuMP.moi_function(f::ExprGenerator{E}) where {E}
     )
 end
 
+function JuMP.jump_function_type(model, ::Type{FunctionGenerator{F}}) where {F}
+    return ExprGenerator{JuMP.jump_function_type(model, F),JuMP.variable_ref_type(model)}
+end
+
 function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
     return ExprGenerator(
         ExprTemplate{JuMP.jump_function_type(model, F)}(
@@ -146,6 +150,27 @@ function JuMP.build_constraint(
     vector_set = S(length(new_func))
     return JuMP.build_constraint(error_fn, new_func, vector_set)
 end
+
+# Interval constraint `lb[i] <= f(i) <= ub[i]` under `container`: the bounds `lb`/`ub` are
+# looked up at the iterator `i` (so they are `IteratorValues`, or a plain number if constant).
+# We build a `FunctionGenerator` for `f` with the per-element bounds carried in `VectorInterval`.
+function JuMP.build_constraint(
+    error_fn::Function,
+    func::ExprTemplate,
+    lb::Union{IteratorValues,Real},
+    ub::Union{IteratorValues,Real},
+)
+    new_func = ExprGenerator(func)
+    n = length(new_func)
+    set = VectorInterval(_bound_values(lb, n), _bound_values(ub, n))
+    return JuMP.build_constraint(error_fn, new_func, set)
+end
+
+# Materialize a (possibly iterator-dependent) constraint bound into a length-`n` vector.
+function _bound_values(v::IteratorValues, n)
+    return [t[v.value_index] for t in v.iterators[v.index.value].values]
+end
+_bound_values(x::Real, n) = fill(float(x), n)
 
 struct IteratedConstraint{
     E,

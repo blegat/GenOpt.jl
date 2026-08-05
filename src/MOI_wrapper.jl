@@ -39,6 +39,7 @@ Base.copy(i::IteratorIndex) = i
 function Base.isapprox(a::IteratorIndex, b::IteratorIndex; kwargs...)
     return a.value == b.value
 end
+MOI.Utilities.map_indices(::Function, i::IteratorIndex) = i
 
 """
     struct IteratorRef
@@ -129,9 +130,37 @@ function Base.copy(f::SumGenerator{F}) where {F}
     return SumGenerator{F}(copy(f.func), f.iterators)
 end
 
+# Like a `JuMP.GenericNonlinearExpr{V}` but containing no JuMP variables
+# so `V` isn't defined
+struct FilterExpression
+    head::Symbol
+    args::Vector{Any}
+end
+
+struct FilteredSumGenerator{F} <: MOI.AbstractScalarFunction
+    func::MOI.ScalarNonlinearFunction
+    iterators::Vector{Iterator} # Slight type instability, we don't have `Iterator{T}`
+    filter::FilterExpression
+end
+
+function Base.copy(f::FilteredSumGenerator{F}) where {F}
+    return FilteredSumGenerator{F}(copy(f.func), f.iterators, f.filter)
+end
+
+function MOI.Utilities.is_canonical(
+    s::Union{SumGenerator,FilteredSumGenerator},
+)
+    return MOI.Utilities.is_canonical(s.func)
+end
+
+function MOI.Utilities.canonicalize!(s::Union{SumGenerator,FilteredSumGenerator})
+    MOI.Utilities.canonicalize!(s.func)
+    return s
+end
+
 function MOI.Utilities.map_indices(
     ::MOI.Utilities.IndexMap,
-    func::Union{FunctionGenerator,SumGenerator},
+    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
 )
     # TODO check it's identity
     return func
@@ -139,8 +168,23 @@ end
 
 function MOI.Utilities.map_indices(
     ::Function,
-    func::Union{FunctionGenerator,SumGenerator},
+    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
 )
     # TODO check it's identity
     return func
 end
+
+"""
+    VectorInterval{T} <: MOI.AbstractVectorSet
+
+Vector set `{x : lower[k] ≤ x[k] ≤ upper[k]}` carrying *per-element* bounds. Used as the set
+of a [`FunctionGenerator`](@ref) built from an interval constraint `lb[i] ≤ f(i) ≤ ub[i]`
+(with `container = ParametrizedArray`), where the bounds `lb`/`ub` vary with the iterator `i`.
+"""
+struct VectorInterval{T} <: MOI.AbstractVectorSet
+    lower::Vector{T}
+    upper::Vector{T}
+end
+
+MOI.dimension(s::VectorInterval) = length(s.lower)
+Base.copy(s::VectorInterval) = VectorInterval(copy(s.lower), copy(s.upper))
