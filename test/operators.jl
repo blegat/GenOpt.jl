@@ -25,18 +25,44 @@ function _test_iterator(it, values)
     @test getindex.(it.iterators[1].values, it.value_index) == values
 end
 
+_eq(a, b) = a == b
+function _eq(a::JuMP.AbstractJuMPScalar, b::JuMP.AbstractJuMPScalar)
+    return JuMP.isequal_canonical(a, b)
+end
+
 function _test_template(et, values)
     @test et isa ExprTemplate
     for i in eachindex(values)
-        @test index_iterators(et.expr, (et.iterators[1].values[i],)) ==
-              values[i]
+        @test _eq(
+            index_iterators(et.expr, (et.iterators[1].values[i],)),
+            values[i],
+        )
     end
 end
 
+function test_variable_vect()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    i = GenOpt.iterator([3, 1])
+    _test_template(x[i], GenOpt._getindex_expr.(Ref(x), [3, 1]))
+    return
+end
+
 function test_vect_getindex()
-    v = [-1, 1, 4]
+    v = [-1, 1, 4, -2]
     i = GenOpt.iterator([3, 1])
     _test_iterator(v[i], [4, -1])
+    _test_iterator(v[i+1], [-2, 1])
+    _test_iterator(v[4-i], [-1, 4])
+    return
+end
+
+function test_vect_getindex()
+    v = [-1, 1, 4, -2]
+    i = GenOpt.iterator([3, 1])
+    _test_iterator(v[i], [4, -1])
+    _test_iterator(v[i+1], [-2, 1])
+    _test_iterator(v[4-i], [-1, 4])
     return
 end
 
