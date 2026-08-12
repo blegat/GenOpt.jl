@@ -89,7 +89,35 @@ function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
     )
 end
 
-_size(expr::ExprGenerator) = length.(getfield.(expr.expr.iterators, :values))
+function JuMP.jump_function_type(
+    model::JuMP.GenericModel{T},
+    ::Type{FunctionGenerator{F}},
+) where {T,F}
+    return ExprGenerator{
+        JuMP.jump_function_type(model, F),
+        JuMP.GenericVariableRef{T},
+    }
+end
+
+_size(expr::ExprGenerator) = length.(expr.expr.iterators)
+
+"""
+    _ind2sub(size::Vector{Int}, i::Integer)
+
+Subscripts of the `i`th entry of an array of size `size`, in column-major
+order like `CartesianIndices`. `Base` only provides this for a *tuple* of
+dimensions; `size` is a vector here since the number of iterators is not
+known at compile time.
+"""
+function _ind2sub(size::Vector{Int}, i::Integer)
+    sub = similar(size)
+    rest = i - 1
+    for k in eachindex(size)
+        rest, j = divrem(rest, size[k])
+        sub[k] = j + 1
+    end
+    return sub
+end
 
 index_iterators(func, _) = func
 
@@ -114,13 +142,14 @@ function index_iterators(func::JuMP.GenericNonlinearExpr, values)
 end
 
 function Base.getindex(expr::ExprGenerator, i::Integer)
-    idx = CartesianIndices(Base.OneTo.(_size(expr)))[i]
-    values =
-        [expr.iterators[i].values[idx[i]] for i in eachindex(expr.iterators)]
+    @boundscheck checkbounds(expr, i)
+    its = expr.expr.iterators
+    sub = _ind2sub(_size(expr), i)
+    values = [its[k].values[sub[k]] for k in eachindex(its)]
     return index_iterators(expr.expr.expr, values)
 end
 
-Base.length(expr::ExprGenerator) = prod(_size(expr))
+Base.size(expr::ExprGenerator) = (prod(_size(expr)),)
 
 struct ParametrizedArray
     constraint::Any

@@ -57,6 +57,38 @@ function test_container()
     @test_broken JuMP.isequal_canonical(con_expr, expr)
 end
 
+function test_ind2sub()
+    # `bridge.jl` expands a generator with `CartesianIndices` so `_ind2sub`
+    # must agree with it, otherwise `getindex` and the bridge would disagree
+    # on which entry is the `i`th one.
+    for size in ([4], [2, 3], [3, 1, 2])
+        indices = CartesianIndices(Tuple(size))
+        for i in eachindex(IndexLinear(), indices)
+            @test GenOpt._ind2sub(size, i) == collect(Tuple(indices[i]))
+        end
+    end
+    return
+end
+
+function test_generator_getindex()
+    model = Model()
+    @variable(model, x)
+    con_ref = @constraint(
+        model,
+        [i in 1:2, j in 1:3],
+        x >= 10 * i + j,
+        container = ParametrizedArray,
+    )
+    gen = constraint_object(con_ref.constraint).func
+    @test gen isa ExprGenerator
+    @test size(gen) == (6,)
+    @test length(gen) == 6
+    # The first iterator varies fastest, like `CartesianIndices`.
+    @test [sprint(show, e) for e in gen] == ["(x - $c) - 0" for c in [11, 21, 12, 22, 13, 23]]
+    @test_throws BoundsError gen[7]
+    return
+end
+
 end  # module
 
 TestJuMP.runtests()

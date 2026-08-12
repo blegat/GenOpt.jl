@@ -70,7 +70,8 @@ function build_model(; N = 3, n = 9, p = 4)
     @constraint(
         model,
         [i in 1:N],
-        x[i+1, 6] == x[i, 6] + (u[i, 1] * cos(x[i, 7]) * cos(x[i, 8]) - 9.8) * dt,
+        x[i+1, 6] ==
+        x[i, 6] + (u[i, 1] * cos(x[i, 7]) * cos(x[i, 8]) - 9.8) * dt,
         container = container,
     )
     @constraint(
@@ -118,5 +119,3 @@ function build_model(; N = 3, n = 9, p = 4)
 
     return model
 end
-
-
