@@ -17,3 +17,5 @@ for file in readdir(@__DIR__)
         include(joinpath(@__DIR__, file))
     end
 end
+
+include(joinpath(dirname(@__DIR__), "examples", "runtests"))
