@@ -19,13 +19,11 @@ function build_model(; N = 3, n = 9, p = 4)
 
     x0 = zeros(n)
 
-    using JuMP
     model = Model()
 
     @variable(model, x[1:(N+1), 1:n])
     @variable(model, u[1:N, 1:p])
 
-    using GenOpt
     container = ParametrizedArray
 
     @constraint(model, [i in 1:n], x[1, i] == x0[i], container = container)

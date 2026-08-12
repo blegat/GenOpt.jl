@@ -18,4 +18,4 @@ for file in readdir(@__DIR__)
     end
 end
 
-include(joinpath(dirname(@__DIR__), "examples", "runtests"))
+include(joinpath(dirname(@__DIR__), "examples", "runtests.jl"))
