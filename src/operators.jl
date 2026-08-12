@@ -254,6 +254,12 @@ end
 
 JuMP._is_real(::LazySum) = true
 JuMP.variable_ref_type(s::LazySum) = JuMP.variable_ref_type(s.expr)
+
+# `JuMP.:+(::AbstractJuMPScalar, ::AbstractJuMPScalar)` calls `iszero` which
+# defaults to `x == zero(x)`. A `LazySum` is never simplified away so we
+# short-circuit it here, this avoids needing `zero(::Type{<:LazySum})`.
+Base.iszero(::LazySum) = false
+
 function JuMP.check_belongs_to_model(s::LazySum, model::JuMP.AbstractModel)
     return JuMP.check_belongs_to_model(s.expr, model)
 end
