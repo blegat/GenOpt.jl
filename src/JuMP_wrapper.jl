@@ -130,7 +130,10 @@ function index_iterators(func::JuMP.GenericNonlinearExpr, values)
     if any(JuMP._has_variable_ref_type, args)
         return JuMP.GenericNonlinearExpr(func.head, args)
     elseif func.head == :getindex
-        return getindex(args...)
+        # `JuMP.jump_function` converts every number to `Float64` when it
+        # converts a `MOI` function back, so the indices need to be converted
+        # back to `Int` here, indexing with a `Real` being deprecated.
+        return getindex(args[1], Int[i for i in args[2:end]]...)
     else
         registry = MOI.Nonlinear.OperatorRegistry()
         if length(func.args) == 1
