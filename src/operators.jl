@@ -340,3 +340,18 @@ function Base.getindex(
     )
     return ExprTemplate{V}(nl, _check_equal(_iterators(i), _iterators(j)))
 end
+
+# Support indexing a `DenseAxisArray` of variables (e.g. `@variable(model, vm[keys(ref[:bus])])`,
+# as PowerModels builds its models) by an iterator. The variables live contiguously in `v.data`,
+# and `v.lookup` maps each axis key to its position; so `v[i]` is `v.data[position_of(i)]`. We
+# reuse the existing `Dict`/`Array{VariableRef}` iterator-indexing methods for each half.
+function Base.getindex(
+    v::JuMP.Containers.DenseAxisArray{V,1},
+    i::_ScalarWithIterator,
+) where {V<:JuMP.AbstractVariableRef}
+    return v.data[_axis_position(v.lookup[1], i)]
+end
+# `_AxisLookup` wraps either a `Dict` (general axis: map key -> position) or a `Base.OneTo`
+# (integer `1:n` axis, where the key already is the position).
+_axis_position(l::JuMP.Containers._AxisLookup{<:AbstractDict}, i) = l.data[i]
+_axis_position(::JuMP.Containers._AxisLookup, i) = i
