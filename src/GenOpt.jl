@@ -7,6 +7,7 @@ module GenOpt
 
 include("MOI_wrapper.jl")
 include("bridge.jl")
+include("regroup.jl")
 include("JuMP_wrapper.jl")
 
 # Copied from JuMP.jl:
