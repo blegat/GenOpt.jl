@@ -301,12 +301,50 @@ function _getindex(d, it::IteratorValues)
     return _new_values(val -> d[val[it.value_index]], it.iterators, it.index)
 end
 
-Base.getindex(d::Dict, i::IteratorValues) = _getindex(d, i)
-Base.getindex(v::Array, i::IteratorValues) = _getindex(v, i)
+Base.getindex(d::Dict, i::_ScalarWithIterator) = _getindex(d, i)
+Base.getindex(v::Array, i::_ScalarWithIterator) = _getindex(v, i)
+
+_push_indices!(indices, _) = indices
+_push_indices!(indices, i::IteratorIndex) = push!(indices, i)
+function _push_indices!(indices, e::JuMP.GenericNonlinearExpr)
+    for arg in e.args
+        _push_indices!(indices, arg)
+    end
+    return indices
+end
+
+# `eval_*_function` evaluates to a `Float64`, so an arithmetic index like `i + 1`
+# comes back as `4.0`: convert it back for array indexing (`Dict` lookup works
+# by `hash`, for which `4.0` and `4` are equal, so no conversion is needed there)
+_data_index(::Array, key) = _to_index(key)
+_data_index(::Dict, key) = key
+
+# Indexing a data collection by a computed iterator expression (e.g. `v[i + 1]`):
+# the expression contains no decision variable, so it is evaluated at each value
+# of the iterator and the result is looked up eagerly, appending it to the
+# iterator values like `getindex(::Array, ::IteratorValues)` does.
+function _getindex(d, t::ExprTemplate)
+    index = only(unique!(_push_indices!(IteratorIndex[], t.expr)))
+    return _new_values(t.iterators, index) do val
+        values = ntuple(k -> k == index.value ? val : (), length(t.iterators))
+        return d[_data_index(d, index_iterators(t.expr, values))]
+    end
+end
 
 function Base.getindex(it::IteratorValues, i)
     @assert it.value_index == 1 # FIXME
     return IteratorValues(it.iterators, it.index, i)
+end
+
+function _getindex_expr(v::AbstractArray{V}, args...) where {V}
+    return JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), args...)
+end
+
+function Base.getindex(
+    v::Array{V},
+    i::_ScalarWithIterator,
+) where {V<:JuMP.AbstractVariableRef}
+    return ExprTemplate{V}(_getindex_expr(v, _expr(i)), _iterators(i))
 end
 
 function Base.getindex(
@@ -314,8 +352,7 @@ function Base.getindex(
     i::Integer,
     j::_ScalarWithIterator,
 ) where {V<:JuMP.AbstractVariableRef}
-    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), i, _expr(j))
-    return ExprTemplate{V}(nl, _iterators(j))
+    return ExprTemplate{V}(_getindex_expr(v, i, _expr(j)), _iterators(j))
 end
 
 function Base.getindex(
@@ -323,8 +360,7 @@ function Base.getindex(
     i::_ScalarWithIterator,
     j::Integer,
 ) where {V<:JuMP.AbstractVariableRef}
-    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i), j)
-    return ExprTemplate{V}(nl, _iterators(i))
+    return ExprTemplate{V}(_getindex_expr(v, _expr(i), j), _iterators(i))
 end
 
 function Base.getindex(
