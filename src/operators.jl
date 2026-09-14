@@ -382,6 +382,31 @@ end
 Base.getindex(d::Dict, i::IteratorValues) = _getindex(d, i)
 Base.getindex(v::Array, i::IteratorValues) = _getindex(v, i)
 
+function _getindex_variable_array(
+    v::Array{V},
+    i::_ScalarWithIterator,
+) where {V<:JuMP.AbstractVariableRef}
+    nl = JuMP.GenericNonlinearExpr{V}(:getindex, to_generator(v), _expr(i))
+    return ExprTemplate{V}(nl, _iterators(i))
+end
+
+# Resolve the one-dimensional variable-array case before the generic
+# `Array`-of-data method above. Without this specialization, `x[i]` is stored
+# as another iterator value instead of becoming an expression template.
+function Base.getindex(
+    v::Array{V},
+    i::IteratorValues,
+) where {V<:JuMP.AbstractVariableRef}
+    return _getindex_variable_array(v, i)
+end
+
+function Base.getindex(
+    v::Array{V},
+    i::ExprTemplate,
+) where {V<:JuMP.AbstractVariableRef}
+    return _getindex_variable_array(v, i)
+end
+
 function Base.getindex(it::IteratorValues, i)
     @assert it.value_index == 1 # FIXME
     return IteratorValues(it.iterators, it.index, i)

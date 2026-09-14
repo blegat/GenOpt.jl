@@ -53,6 +53,16 @@ function test_filtered_dict()
     grp = Dict(1 => 1, 2 => 1, 3 => 2)
     s = GenOpt.lazy_sum(x[j] for j in 1:3 if grp[j] == 1)
     @test s isa GenOpt.FilteredLazySum
+    @test s.expr.head == :getindex
+    return
+end
+
+function test_unfiltered_vector_of_variables()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    s = GenOpt.lazy_sum(x[j] for j in 1:3)
+    @test s isa GenOpt.LazySum
+    @test s.expr.head == :getindex
     return
 end
 
