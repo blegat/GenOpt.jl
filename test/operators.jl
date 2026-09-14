@@ -9,7 +9,6 @@ using Test
 using GenOpt
 import JuMP
 import MathOptInterface as MOI
-import MutableArithmetics as MA
 
 function runtests()
     for name in names(@__MODULE__; all = true)
@@ -100,7 +99,7 @@ function test_lazy_sum_promotion()
     model = JuMP.Model()
     JuMP.@variable(model, x[1:3])
     s = GenOpt.lazy_sum(x[j] for j in 1:3)
-    @test MA.promote_operation(+, JuMP.AffExpr, typeof(s)) ==
+    @test GenOpt.MA.promote_operation(+, JuMP.AffExpr, typeof(s)) ==
           JuMP.GenericNonlinearExpr{JuMP.VariableRef}
     return
 end
