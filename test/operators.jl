@@ -9,6 +9,7 @@ using Test
 using GenOpt
 import JuMP
 import MathOptInterface as MOI
+import MutableArithmetics as MA
 
 function runtests()
     for name in names(@__MODULE__; all = true)
@@ -42,6 +43,84 @@ function test_getindex()
 
     _test_iterator(d1[i], [-1, 1])
     _test_iterator(d2[i], Real[π, 0.0])
+    return
+end
+
+function test_filtered_dict()
+    # `lazy_sum(... if dict[j] == i)` must support a `Dict` in the filter, not just a
+    # `Vector` (used e.g. in the OPF example for `arc_bus`/`gen_bus` maps).
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    grp = Dict(1 => 1, 2 => 1, 3 => 2)
+    s = GenOpt.lazy_sum(x[j] for j in 1:3 if grp[j] == 1)
+    @test s isa GenOpt.FilteredLazySum
+    @test s.expr.head == :getindex
+    return
+end
+
+function test_filtered_array()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    group = [1, 1, 2]
+    s = GenOpt.lazy_sum(x[j] for j in 1:3 if group[j] == 1)
+    @test s isa GenOpt.FilteredLazySum
+    @test s.filter.head == :(==)
+    return
+end
+
+function test_filtered_sum_moi_utilities()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    group = [1, 1, 2]
+    lazy = GenOpt.lazy_sum(x[j] for j in 1:3 if group[j] == 1)
+    generator = JuMP.moi_function(lazy)
+
+    copied = copy(generator)
+    @test copied isa GenOpt.FilteredSumGenerator
+    @test copied.func !== generator.func
+    @test copied.filter === generator.filter
+    @test MOI.Utilities.is_canonical(copied)
+    @test MOI.Utilities.canonicalize!(copied) === copied
+    @test MOI.Utilities.map_indices(MOI.Utilities.IndexMap(), copied) === copied
+    @test MOI.Utilities.map_indices(identity, copied) === copied
+    return
+end
+
+function test_jump_function_type()
+    model = JuMP.Model()
+    F = MOI.ScalarAffineFunction{Float64}
+    @test JuMP.jump_function_type(model, GenOpt.SumGenerator{F}) ==
+          GenOpt.LazySum{JuMP.AffExpr,JuMP.VariableRef}
+    @test JuMP.jump_function_type(model, GenOpt.FilteredSumGenerator{F}) ==
+          GenOpt.FilteredLazySum{JuMP.AffExpr,JuMP.VariableRef}
+    return
+end
+
+function test_lazy_sum_promotion()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    s = GenOpt.lazy_sum(x[j] for j in 1:3)
+    @test MA.promote_operation(+, JuMP.AffExpr, typeof(s)) ==
+          JuMP.GenericNonlinearExpr{JuMP.VariableRef}
+    return
+end
+
+function test_variable_array_expr_index()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    s = GenOpt.lazy_sum(x[j+1] for j in 0:2)
+    @test s isa GenOpt.LazySum
+    @test s.expr.head == :getindex
+    @test s.expr.args[2] isa JuMP.GenericNonlinearExpr
+    return
+end
+
+function test_unfiltered_vector_of_variables()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    s = GenOpt.lazy_sum(x[j] for j in 1:3)
+    @test s isa GenOpt.LazySum
+    @test s.expr.head == :getindex
     return
 end
 
