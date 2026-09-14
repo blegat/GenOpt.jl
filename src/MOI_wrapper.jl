@@ -146,13 +146,13 @@ function Base.copy(f::FilteredSumGenerator{F}) where {F}
     return FilteredSumGenerator{F}(copy(f.func), f.iterators, f.filter)
 end
 
-function MOI.Utilities.is_canonical(
-    s::Union{SumGenerator,FilteredSumGenerator},
-)
+function MOI.Utilities.is_canonical(s::Union{SumGenerator,FilteredSumGenerator})
     return MOI.Utilities.is_canonical(s.func)
 end
 
-function MOI.Utilities.canonicalize!(s::Union{SumGenerator,FilteredSumGenerator})
+function MOI.Utilities.canonicalize!(
+    s::Union{SumGenerator,FilteredSumGenerator},
+)
     MOI.Utilities.canonicalize!(s.func)
     return s
 end

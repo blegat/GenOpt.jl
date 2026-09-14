@@ -258,7 +258,10 @@ struct FilteredLazySum{E,V<:JuMP.AbstractVariableRef} <: JuMP.AbstractJuMPScalar
     filter::FilterExpression
 end
 
-function FilteredLazySum(template::ExprTemplate{E,V}, filter::FilterExpression) where {E,V}
+function FilteredLazySum(
+    template::ExprTemplate{E,V},
+    filter::FilterExpression,
+) where {E,V}
     return FilteredLazySum{E,V}(template.expr, template.iterators, filter)
 end
 
@@ -291,8 +294,14 @@ function JuMP.moi_function(s::LazySum{E}) where {E}
     )
 end
 
-function JuMP.jump_function_type(model::JuMP.GenericModel, ::Type{SumGenerator{F}}) where {F}
-    return LazySum{JuMP.jump_function_type(model, F),JuMP.variable_ref_type(model)}
+function JuMP.jump_function_type(
+    model::JuMP.GenericModel,
+    ::Type{SumGenerator{F}},
+) where {F}
+    return LazySum{
+        JuMP.jump_function_type(model, F),
+        JuMP.variable_ref_type(model),
+    }
 end
 
 function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
@@ -303,10 +312,15 @@ function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
     )
 end
 
-function JuMP.jump_function_type(model::JuMP.GenericModel, ::Type{FilteredSumGenerator{F}}) where {F}
-    return FilteredLazySum{JuMP.jump_function_type(model, F),JuMP.variable_ref_type(model)}
+function JuMP.jump_function_type(
+    model::JuMP.GenericModel,
+    ::Type{FilteredSumGenerator{F}},
+) where {F}
+    return FilteredLazySum{
+        JuMP.jump_function_type(model, F),
+        JuMP.variable_ref_type(model),
+    }
 end
-
 
 # From the code:
 # `lazy_sum(... for j in 1:n if j == i)`
@@ -349,7 +363,9 @@ function _generator_iterators(it::Base.Iterators.Filter)
     # (typed `_` destructuring would need Julia 1.12; we support 1.10)
     is_product, its, inner_filter = _generator_iterators(it.itr)
     inner_filter::Nothing
-    return is_product, its, it.flt(_untuple_product(is_product, _Filtered.(its)))
+    return is_product,
+    its,
+    it.flt(_untuple_product(is_product, _Filtered.(its)))
 end
 
 function lazy_sum(gen::Base.Generator)
