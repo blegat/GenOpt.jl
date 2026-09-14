@@ -6,6 +6,7 @@
 module GenOpt
 
 include("MOI_wrapper.jl")
+include("MOF.jl")
 include("bridge.jl")
 include("JuMP_wrapper.jl")
 
