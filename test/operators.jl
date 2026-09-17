@@ -3,6 +3,10 @@
 # Use of this source code is governed by an MIT-style license that can be found
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
+# Scope: building expressions (`iterator`, `ExprTemplate`, `lazy_sum`, filtered or not) and
+# the JuMP/MOI functions they lower to, without solving. Add any new test about how an
+# expression is *built* or *stored* here rather than in a new file.
+
 module TestOperators
 
 using Test
@@ -158,6 +162,36 @@ function test_lazy_sum_sum()
     @test func.head == :+
     @test func.args[1] isa SumGenerator{MOI.ScalarQuadraticFunction{Float64}}
     @test func.args[2] isa SumGenerator{MOI.ScalarAffineFunction{Float64}}
+    return
+end
+
+_has_filtered_sum(x) =
+    if x isa MOI.ScalarNonlinearFunction
+        any(_has_filtered_sum, x.args)
+    else
+        x isa GenOpt.FilteredSumGenerator
+    end
+
+# Integration test for a filtered `lazy_sum` used inside a constraint of a JuMP model.
+#
+# Why it is useful: "sum over the members of a group" is ubiquitous (flow balance at a node,
+# assignment per category, ...). `lazy_sum(x[j] for j in J if group[j] == i)` expresses that
+# lazily, and it must survive all the way to the MOI model as a `FilteredSumGenerator` (a
+# single filtered-sum object per row) rather than being expanded or dropped.
+function test_grouped_balance_constraint()
+    group = Dict(1 => 1, 2 => 1, 3 => 2)   # variable j belongs to group `group[j]`
+    demand = [3.0, 5.0]
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3, 1:1])
+    JuMP.@constraint(
+        model,
+        con[i in 1:2],
+        demand[i] == GenOpt.lazy_sum(x[j, 1] for j in 1:3 if group[j] == i),
+    )
+    backend = JuMP.backend(model)
+    func = MOI.get(backend, MOI.ConstraintFunction(), JuMP.index(con[1]))
+    # The filtered sum is preserved in the stored MOI function.
+    @test _has_filtered_sum(func)
     return
 end
 

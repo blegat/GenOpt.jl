@@ -3,6 +3,9 @@
 # Use of this source code is governed by an MIT-style license that can be found
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
+# Scope: the JuMP-level API (containers, macros, `Model` interaction), without solving.
+# Add new tests of the user-facing JuMP layer here rather than in a new file.
+
 module TestJuMP
 
 using Test

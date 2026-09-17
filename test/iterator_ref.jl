@@ -3,6 +3,9 @@
 # Use of this source code is governed by an MIT-style license that can be found
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
+# Scope: `IteratorRef` at the MOI level, end to end with a solver (HiGHS). Add new tests
+# about iterator references in a solved model here rather than in a new file.
+
 module TestIteratorRef
 
 using Test
