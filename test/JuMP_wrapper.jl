@@ -11,6 +11,7 @@ module TestJuMP
 using Test
 using JuMP
 using GenOpt
+import MathOptInterface as MOI
 
 function runtests()
     for name in names(@__MODULE__; all = true)
@@ -89,6 +90,35 @@ function test_generator_getindex()
     # The first iterator varies fastest, like `CartesianIndices`.
     @test [sprint(show, e) for e in gen] == ["(x - $c) - 0" for c in [11, 21, 12, 22, 13, 23]]
     @test_throws BoundsError gen[7]
+    return
+end
+
+# Interval constraint `lb[i] <= f(i) <= ub[i]` under `container = ParametrizedArray`.
+#
+# Why it is useful: range constraints whose bounds depend on the index (an angle/pressure/
+# temperature window) are routine. The whole family must become a single `FunctionGenerator`
+# in one `MOI.HyperRectangle` carrying the per-element bounds, not one row per index.
+function test_per_element_interval_bounds()
+    lb = [1.0, 2.0]
+    ub = [3.0, 4.0]
+    model = Model()
+    @variable(model, x[1:2, 1:1])
+    @constraint(
+        model,
+        [i in 1:2],
+        lb[i] <= x[i, 1] <= ub[i],
+        container = ParametrizedArray,
+    )
+    b = backend(model)
+    types = MOI.get(b, MOI.ListOfConstraintTypesPresent())
+    F, S = only(t for t in types if t[1] <: GenOpt.FunctionGenerator)
+    @test S <: MOI.HyperRectangle
+    ci = only(MOI.get(b, MOI.ListOfConstraintIndices{F,S}()))
+    set = MOI.get(b, MOI.ConstraintSet(), ci)
+    # A single vectorized constraint holding both rows, with the per-element bounds.
+    @test MOI.dimension(set) == 2
+    @test set.lower ≈ lb
+    @test set.upper ≈ ub
     return
 end
 
