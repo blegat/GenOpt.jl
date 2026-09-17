@@ -181,7 +181,6 @@ end
 
 # Interval constraint `lb[i] <= f(i) <= ub[i]` under `container`: the bounds `lb`/`ub` are
 # looked up at the iterator `i` (so they are `IteratorValues`, or a plain number if constant).
-# We build a `FunctionGenerator` for `f` with the per-element bounds carried in `VectorInterval`.
 function JuMP.build_constraint(
     error_fn::Function,
     func::ExprTemplate,
@@ -190,7 +189,7 @@ function JuMP.build_constraint(
 )
     new_func = ExprGenerator(func)
     n = length(new_func)
-    set = VectorInterval(_bound_values(lb, n), _bound_values(ub, n))
+    set = MOI.HyperRectangle(_bound_values(lb, n), _bound_values(ub, n))
     return JuMP.build_constraint(error_fn, new_func, set)
 end
 
