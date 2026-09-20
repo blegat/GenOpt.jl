@@ -3,8 +3,9 @@
 # Use of this source code is governed by an MIT-style license that can be found
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
-# Scope: `IteratorRef` at the MOI level, end to end with a solver (HiGHS). Add new tests
-# about iterator references in a solved model here rather than in a new file.
+# Scope: `IteratorRef` and `IteratorIndex` at the MOI level, end to end with a solver
+# (HiGHS). Add new tests about iterator references or placeholders in a template here
+# rather than in a new file.
 
 module TestIteratorRef
 
@@ -107,6 +108,38 @@ function test_solve_through_bridge()
     @test MOI.get(optimizer, MOI.TerminationStatus()) == MOI.OPTIMAL
     @test MOI.get(optimizer, MOI.VariablePrimal(), x) ≈ [1.0, 2.0, 3.0] atol =
         1e-6
+end
+
+# `MOI.Utilities.map_indices` is called on every function of a model that is copied from one
+# optimizer to another. That happens whenever the model is built before the solver is
+# attached -- `Model()`, then `set_optimizer`, then `optimize!` -- which is how the OPF
+# example is written.
+#
+# Why it is useful: `map_indices` walks every argument of a `ScalarNonlinearFunction`, so it
+# reaches the `IteratorIndex` placeholders a generator template is made of. They are not MOI
+# indices and nothing maps them, so without a method for them the copy fails with
+# `MethodError: no method matching map_indices(::Base.Fix1{typeof(getindex), IndexMap},
+# ::IteratorIndex)`. They must come back untouched while the variables around them are
+# remapped.
+function test_map_indices_keeps_iterator_index()
+    block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+    index = GenOpt.IteratorIndex(1)
+    template =
+        MOI.ScalarNonlinearFunction(:-, Any[_getindex(block, index), index])
+    # The index map a copy to another model would use: shift every variable.
+    index_map = MOI.Utilities.IndexMap()
+    for k in 1:3
+        index_map[MOI.VariableIndex(k)] = MOI.VariableIndex(k + 10)
+    end
+    mapped = MOI.Utilities.map_indices(index_map, template)
+    @test mapped.head == :-
+    # The placeholders are left as they are, at both depths of the expression.
+    @test mapped.args[2] === index
+    @test mapped.args[1].head == :getindex
+    @test mapped.args[1].args[2] === index
+    # ... while the variables they index into are remapped.
+    @test mapped.args[1].args[1] == MOI.VariableIndex.(11:13)
+    return
 end
 
 end  # module
