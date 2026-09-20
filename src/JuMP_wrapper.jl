@@ -73,6 +73,10 @@ struct ExprGenerator{E,V<:JuMP.AbstractVariableRef} <:
     expr::ExprTemplate{E,V}
 end
 
+function JuMP.moi_function_type(::Type{ExprGenerator{E,V}}) where {E,V}
+    return FunctionGenerator{JuMP.moi_function_type(E)}
+end
+
 function JuMP.moi_function(f::ExprGenerator{E}) where {E}
     return FunctionGenerator{JuMP.moi_function_type(E)}(
         JuMP.moi_function(f.expr.expr),
@@ -85,6 +89,30 @@ function JuMP.jump_function_type(model, ::Type{FunctionGenerator{F}}) where {F}
         JuMP.jump_function_type(model, F),
         JuMP.variable_ref_type(model),
     }
+end
+
+# `ExprGenerator` is an `AbstractVector` of expressions but not a `Vector`, so it does not
+# match `JuMP.num_constraints(::GenericModel, ::Type{<:Union{AbstractJuMPScalar,
+# Vector{<:AbstractJuMPScalar}}}, ::Type{<:MOI.AbstractSet})`, which `show(model)` calls for
+# every type of `list_of_constraint_types`.
+function JuMP.num_constraints(
+    model::JuMP.GenericModel,
+    ::Type{F},
+    ::Type{S},
+) where {F<:ExprGenerator,S<:MOI.AbstractSet}
+    f_type = JuMP.moi_function_type(F)
+    return MOI.get(model, MOI.NumberOfConstraints{f_type,S}())
+end
+
+function JuMP.all_constraints(
+    model::JuMP.GenericModel,
+    ::Type{F},
+    ::Type{S},
+) where {F<:ExprGenerator,S<:MOI.AbstractVectorSet}
+    f_type = JuMP.moi_function_type(F)
+    C = JuMP.ConstraintRef{typeof(model),MOI.ConstraintIndex{f_type,S}}
+    indices = MOI.get(model, MOI.ListOfConstraintIndices{f_type,S}())
+    return C[JuMP.constraint_ref_with_index(model, idx) for idx in indices]
 end
 
 function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}

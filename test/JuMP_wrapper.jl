@@ -181,6 +181,21 @@ function test_list_of_constraint_types()
     @test any(F <: GenOpt.ExprGenerator for (F, S) in types)
     F = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}
     @test jump_function_type(model, F) <: GenOpt.ExprGenerator
+
+    # Round trip: the JuMP type maps back to the MOI type it was built from, and back.
+    E = jump_function_type(model, F)
+    @test moi_function_type(E) == F
+    @test jump_function_type(model, moi_function_type(E)) == E
+
+    # `show(::Model)` counts the constraints of every `(F, S)` of
+    # `list_of_constraint_types`, so it needs `num_constraints` for an `ExprGenerator`. The
+    # whole family counts as the one vectorized constraint it is.
+    _, S = only(t for t in types if t[1] <: GenOpt.ExprGenerator)
+    @test num_constraints(model, E, S) == 1
+    @test occursin("num_constraints: 1", sprint(show, model))
+    # `all_constraints` is the same gap, reached by `print(model)` and by a user asking for
+    # the constraints of that type.
+    @test length(all_constraints(model, E, S)) == 1
     return
 end
 
