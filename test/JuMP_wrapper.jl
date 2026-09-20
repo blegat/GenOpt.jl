@@ -158,6 +158,47 @@ function test_constant_interval_bounds()
     return
 end
 
+# `list_of_constraint_types` on a model holding a GenOpt `container` constraint, and hence
+# `show(model)`, which calls it.
+#
+# Why it is useful: a JuMP user (and JuMP's own `show`) queries `list_of_constraint_types`,
+# which must map the stored MOI `FunctionGenerator` back to its JuMP function type. Without
+# `jump_function_type` for `FunctionGenerator`, that query errors on any model built with a
+# `container` constraint.
+function test_list_of_constraint_types()
+    b = [1.0, 2.0]
+    model = Model()
+    @variable(model, x[1:2, 1:1])
+    @constraint(
+        model,
+        [i in 1:2],
+        x[i, 1] >= b[i],
+        container = ParametrizedArray,
+    )
+    # Goes through `jump_function_type(::FunctionGenerator)`; the container constraint is
+    # reported at the JuMP level as an `ExprGenerator`.
+    types = list_of_constraint_types(model)
+    @test any(F <: GenOpt.ExprGenerator for (F, S) in types)
+    F = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}
+    @test jump_function_type(model, F) <: GenOpt.ExprGenerator
+
+    # Round trip: the JuMP type maps back to the MOI type it was built from, and back.
+    E = jump_function_type(model, F)
+    @test moi_function_type(E) == F
+    @test jump_function_type(model, moi_function_type(E)) == E
+
+    # `show(::Model)` counts the constraints of every `(F, S)` of
+    # `list_of_constraint_types`, so it needs `num_constraints` for an `ExprGenerator`. The
+    # whole family counts as the one vectorized constraint it is.
+    _, S = only(t for t in types if t[1] <: GenOpt.ExprGenerator)
+    @test num_constraints(model, E, S) == 1
+    @test occursin("num_constraints: 1", sprint(show, model))
+    # `all_constraints` is the same gap, reached by `print(model)` and by a user asking for
+    # the constraints of that type.
+    @test length(all_constraints(model, E, S)) == 1
+    return
+end
+
 end  # module
 
 TestJuMP.runtests()
