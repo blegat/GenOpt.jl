@@ -158,6 +158,32 @@ function test_constant_interval_bounds()
     return
 end
 
+# `list_of_constraint_types` on a model holding a GenOpt `container` constraint, and hence
+# `show(model)`, which calls it.
+#
+# Why it is useful: a JuMP user (and JuMP's own `show`) queries `list_of_constraint_types`,
+# which must map the stored MOI `FunctionGenerator` back to its JuMP function type. Without
+# `jump_function_type` for `FunctionGenerator`, that query errors on any model built with a
+# `container` constraint.
+function test_list_of_constraint_types()
+    b = [1.0, 2.0]
+    model = Model()
+    @variable(model, x[1:2, 1:1])
+    @constraint(
+        model,
+        [i in 1:2],
+        x[i, 1] >= b[i],
+        container = ParametrizedArray,
+    )
+    # Goes through `jump_function_type(::FunctionGenerator)`; the container constraint is
+    # reported at the JuMP level as an `ExprGenerator`.
+    types = list_of_constraint_types(model)
+    @test any(F <: GenOpt.ExprGenerator for (F, S) in types)
+    F = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}
+    @test jump_function_type(model, F) <: GenOpt.ExprGenerator
+    return
+end
+
 end  # module
 
 TestJuMP.runtests()

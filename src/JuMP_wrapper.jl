@@ -81,7 +81,10 @@ function JuMP.moi_function(f::ExprGenerator{E}) where {E}
 end
 
 function JuMP.jump_function_type(model, ::Type{FunctionGenerator{F}}) where {F}
-    return ExprGenerator{JuMP.jump_function_type(model, F),JuMP.variable_ref_type(model)}
+    return ExprGenerator{
+        JuMP.jump_function_type(model, F),
+        JuMP.variable_ref_type(model),
+    }
 end
 
 function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
@@ -91,16 +94,6 @@ function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
             f.iterators,
         ),
     )
-end
-
-function JuMP.jump_function_type(
-    model::JuMP.GenericModel{T},
-    ::Type{FunctionGenerator{F}},
-) where {T,F}
-    return ExprGenerator{
-        JuMP.jump_function_type(model, F),
-        JuMP.GenericVariableRef{T},
-    }
 end
 
 _size(expr::ExprGenerator) = length.(expr.expr.iterators)
