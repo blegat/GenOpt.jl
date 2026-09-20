@@ -62,15 +62,6 @@ function test_vect_getindex()
     return
 end
 
-function test_vect_getindex()
-    v = [-1, 1, 4, -2]
-    i = GenOpt.iterator([3, 1])
-    _test_iterator(v[i], [4, -1])
-    _test_iterator(v[i+1], [-2, 1])
-    _test_iterator(v[4-i], [-1, 4])
-    return
-end
-
 function test_dict_getindex()
     d1 = Dict(:a => -1, :b => 1)
     d2 = Dict(:a => π, :b => 0.0)
@@ -79,6 +70,12 @@ function test_dict_getindex()
 
     _test_iterator(d1[i], [-1, 1])
     _test_iterator(d2[i], Real[π, 0.0])
+
+    # A computed index, so the key is the value of the expression. Unlike an `Array`, a
+    # `Dict` needs no conversion back to `Int` since `hash(3.0) == hash(3)`.
+    d3 = Dict(1 => -1, 2 => 1, 3 => 4)
+    j = GenOpt.iterator([2, 1])
+    _test_iterator(d3[j+1], [4, 1])
     return
 end
 
