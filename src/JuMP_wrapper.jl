@@ -187,6 +187,22 @@ function JuMP.build_constraint(
     lb::Union{IteratorValues,Real},
     ub::Union{IteratorValues,Real},
 )
+    return _build_interval(error_fn, func, lb, ub)
+end
+
+# Disambiguate with `JuMP.build_constraint(::Function, ::JuMP.AbstractJuMPScalar, ::Real,
+# ::Real)` when both bounds are constant, e.g. `1 <= f(i) <= 2`. The generic JuMP method
+# would build a scalar `MOI.Interval` constraint, losing the generator structure.
+function JuMP.build_constraint(
+    error_fn::Function,
+    func::ExprTemplate,
+    lb::Real,
+    ub::Real,
+)
+    return _build_interval(error_fn, func, lb, ub)
+end
+
+function _build_interval(error_fn::Function, func::ExprTemplate, lb, ub)
     new_func = ExprGenerator(func)
     n = length(new_func)
     set = MOI.HyperRectangle(_bound_values(lb, n), _bound_values(ub, n))

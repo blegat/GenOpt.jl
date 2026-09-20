@@ -122,6 +122,42 @@ function test_per_element_interval_bounds()
     return
 end
 
+# Interval constraint with a *constant* bound, e.g. `1 <= f(i) <= ub[i]`: the constant side
+# is not an `IteratorValues` so it must be broadcast to every element of the generator.
+function test_constant_interval_bounds()
+    ub = [3.0, 4.0]
+    model = Model()
+    @variable(model, x[1:2, 1:1])
+    @constraint(
+        model,
+        [i in 1:2],
+        1 <= x[i, 1] <= ub[i],
+        container = ParametrizedArray,
+    )
+    @constraint(
+        model,
+        [i in 1:2],
+        -1 <= x[i, 1] <= 2,
+        container = ParametrizedArray,
+    )
+    b = backend(model)
+    types = MOI.get(b, MOI.ListOfConstraintTypesPresent())
+    F, S = only(t for t in types if t[1] <: GenOpt.FunctionGenerator)
+    @test S <: MOI.HyperRectangle
+    sets = map(MOI.get(b, MOI.ListOfConstraintIndices{F,S}())) do ci
+        return MOI.get(b, MOI.ConstraintSet(), ci)
+    end
+    @test length(sets) == 2
+    mixed, constant = sets
+    # The constant `1` is repeated for each index, the vector bound is kept as is.
+    @test mixed.lower ≈ [1.0, 1.0]
+    @test mixed.upper ≈ ub
+    # Both bounds constant: still a single vectorized constraint of dimension 2.
+    @test constant.lower ≈ [-1.0, -1.0]
+    @test constant.upper ≈ [2.0, 2.0]
+    return
+end
+
 end  # module
 
 TestJuMP.runtests()
