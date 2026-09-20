@@ -53,6 +53,34 @@ function test_variable_vect()
     return
 end
 
+# Indexing a `DenseAxisArray` of variables by an iterator, the way the OPF example builds its
+# model: `@variable(model, va[keys(ref[:bus])])` is indexed by the PowerModels component ids,
+# so the axis is a `Dict` lookup rather than `1:n`, and the constraints index it both directly
+# (`va[i]`) and through a data `Dict` (`va[f_bus[i]]`).
+function test_dense_axis_array_getindex()
+    bus = [101, 202, 303]           # component ids, not positions
+    model = JuMP.Model()
+    JuMP.@variable(model, va[bus])
+    i = GenOpt.iterator([303, 101])
+    # The keys are looked up in the axis, so the template indexes `va.data` by position.
+    _test_template(va[i], GenOpt._getindex_expr.(Ref(va.data), [3, 1]))
+
+    # `f_bus[i]` is itself an iterator value, as in `va[f_bus[i]]`.
+    f_bus = Dict(1 => 202, 2 => 101)
+    j = GenOpt.iterator([2, 1])
+    _test_template(va[f_bus[j]], GenOpt._getindex_expr.(Ref(va.data), [1, 2]))
+    return
+end
+
+function test_dense_axis_array_one_to_getindex()
+    # An axis that already is `1:n`: the key is the position, no `Dict` to go through.
+    model = JuMP.Model()
+    JuMP.@variable(model, y[1:3], container = JuMP.Containers.DenseAxisArray)
+    i = GenOpt.iterator([3, 1])
+    _test_template(y[i], GenOpt._getindex_expr.(Ref(y.data), [3, 1]))
+    return
+end
+
 function test_vect_getindex()
     v = [-1, 1, 4, -2]
     i = GenOpt.iterator([3, 1])
