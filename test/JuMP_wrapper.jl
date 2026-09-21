@@ -164,6 +164,40 @@ function test_container()
     @test_broken JuMP.isequal_canonical(con_expr, expr)
 end
 
+function test_index_iterators_scalar_arguments()
+    model = Model()
+    @variable(model, x)
+    i = GenOpt.iterator([1, 2])
+    expr = (x + i)^2
+    expanded = GenOpt.index_iterators(expr.expr, ((2,),))
+    @test expanded isa GenericNonlinearExpr{VariableRef}
+    @test expanded.head == :^
+    @test length(expanded.args) == 2
+    @test expanded.args[2] == 2
+    inner = expanded.args[1]
+    @test inner isa GenericNonlinearExpr{VariableRef}
+    @test inner.head == :+
+    @test length(inner.args) == 2
+    @test inner.args[1] === x
+    @test inner.args[2] == 2
+    # Unlike the mixed expression/number arguments above, these reconstructions
+    # produce a homogeneous vector of expressions. It is an argument list, not
+    # one vector-valued argument to the nonlinear operator.
+    for (head, expr, count) in
+        ((:sin, sin(x + i), 1), (:*, (x + i) * (x + i), 2))
+        expanded = GenOpt.index_iterators(expr.expr, ((2,),))
+        @test expanded isa GenericNonlinearExpr{VariableRef}
+        @test expanded.head == head
+        @test length(expanded.args) == count
+        for inner in expanded.args
+            @test inner isa GenericNonlinearExpr{VariableRef}
+            @test inner.head == :+
+            @test inner.args == Any[x, 2]
+        end
+    end
+    return
+end
+
 function test_ind2sub()
     # `bridge.jl` expands a generator with `CartesianIndices` so `_ind2sub`
     # must agree with it, otherwise `getindex` and the bridge would disagree

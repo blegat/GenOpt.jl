@@ -183,7 +183,7 @@ end
 function index_iterators(func::JuMP.GenericNonlinearExpr, values)
     args = map(Base.Fix2(index_iterators, values), func.args)
     if any(JuMP._has_variable_ref_type, args)
-        return JuMP.GenericNonlinearExpr(func.head, args)
+        return JuMP.GenericNonlinearExpr(func.head, args...)
     elseif func.head == :getindex
         # `JuMP.jump_function` converts every number to `Float64` when it
         # converts a `MOI` function back, so the indices need to be converted
