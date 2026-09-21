@@ -274,6 +274,7 @@ JuMP.variable_ref_type(s::_AnyLazySum) = JuMP.variable_ref_type(s.expr)
 # defaults to `x == zero(x)`. A `LazySum` is never simplified away so we
 # short-circuit it here, this avoids needing `zero(::Type{<:LazySum})`.
 Base.iszero(::_AnyLazySum) = false
+JuMP.owner_model(s::_AnyLazySum) = JuMP.owner_model(s.expr)
 
 function JuMP.check_belongs_to_model(s::_AnyLazySum, model::JuMP.AbstractModel)
     return JuMP.check_belongs_to_model(s.expr, model)

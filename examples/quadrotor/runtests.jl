@@ -1,3 +1,5 @@
+module TestQuadrotor
+
 using Test
 import MathOptInterface as MOI
 
@@ -84,3 +86,5 @@ end
     # `N * p` control terms, `N * n` stage terms and `n` terminal terms.
     @test terms == [N * 4, N * n, n]
 end
+
+end  # module TestQuadrotor
