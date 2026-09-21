@@ -46,8 +46,8 @@ function MOI.Bridges.Constraint.bridge_constraint(
 end
 
 # `_build_function(F, expr, values)` walks the template once and produces a
-# concrete `F`. Only specialized fast paths exist — there is no generic
-# `Base.convert` fallback.
+# concrete `F`. Affine and quadratic templates use specialized builders;
+# other function types retain the general expansion-and-conversion path.
 
 function _build_function(
     ::Type{MOI.ScalarAffineFunction{T}},
@@ -73,8 +73,8 @@ function _build_function(
     return out
 end
 
-function _build_function(::Type{MOI.ScalarNonlinearFunction}, expr, values)
-    return _expand(expr, values)
+function _build_function(::Type{F}, expr, values) where {F}
+    return convert(F, _expand(expr, values))
 end
 
 function MOI.supports_constraint(
@@ -223,11 +223,12 @@ macro _try_const(T, x, values)
                 nothing
             elseif _x isa IteratorIndex
                 _v = $values[_x.value]
-                _v isa $T ? _v : (_v isa Int ? $T(_v) : nothing)
+                _v isa $T ? _v :
+                (_v isa Int ? $T(_v) : _try_const_fallback($T, _v, $values))
             elseif _x isa MOI.ScalarNonlinearFunction
                 _try_const_snf($T, _x, $values)
             else
-                nothing
+                _try_const_fallback($T, _x, $values)
             end
         end
     end
@@ -261,13 +262,7 @@ macro _expand_affine_recurse(out, arg, values, coef, T)
             elseif _a isa Number
                 _add_constant!($out, $coef * $T(_a))
             else
-                throw(
-                    InexactError(
-                        :_expand_affine!,
-                        MOI.ScalarAffineFunction{$T},
-                        _a,
-                    ),
-                )
+                _expand_affine_fallback!($out, _a, $values, $coef)
             end
         end
     end
@@ -296,7 +291,7 @@ end
     elseif arg isa Number
         _add_constant!(out, coef * T(arg::Number))
     else
-        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, arg))
+        _expand_affine_fallback!(out, arg, values, coef)
     end
     return
 end
@@ -343,7 +338,7 @@ function _expand_affine_snf!(
             @_expand_affine_recurse out a1 values new_coef T
             return
         end
-        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, expr))
+        _expand_affine_fallback!(out, expr, values, coef)
     elseif h === :getindex
         _expand_getindex_affine!(out, args, values, coef)
         return
@@ -353,7 +348,7 @@ function _expand_affine_snf!(
             _add_constant!(out, coef * c)
             return
         end
-        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, expr))
+        _expand_affine_fallback!(out, expr, values, coef)
     end
 end
 
@@ -396,8 +391,27 @@ end
     elseif arg isa Number
         _add_constant!(out, coef * T(arg))
     else
-        throw(InexactError(:_expand_affine!, MOI.ScalarAffineFunction{T}, arg))
+        _expand_affine_fallback!(out, arg, values, coef)
     end
+    return
+end
+
+# Keep uncommon forms (including embedded MOI polynomials) out of the
+# allocation-free walker. Conversion still rejects non-affine expressions.
+function _expand_affine_fallback!(
+    out::MOI.ScalarAffineFunction{T},
+    expr,
+    values,
+    coef::T,
+) where {T}
+    f = convert(MOI.ScalarAffineFunction{T}, _expand(expr, values))
+    for term in f.terms
+        push!(
+            out.terms,
+            MOI.ScalarAffineTerm(coef * term.coefficient, term.variable),
+        )
+    end
+    out.constant += coef * f.constant
     return
 end
 
@@ -418,22 +432,22 @@ function _expand_getindex_affine!(
     # concrete-`N` narrowing with the matching arity-specific getindex helper
     # so each branch has a single concrete return type (no `Union` boxing).
     # `N = 0, 1, 2` are enumerated; higher arities pay one box per call.
-    if coll isa ContiguousArrayOfVariables{0}
+    if coll isa ContiguousArrayOfVariables{0} && length(args) == 1
         v = getindex(coll)
         push!(out.terms, MOI.ScalarAffineTerm(coef, v))
-    elseif coll isa ContiguousArrayOfVariables{1}
+    elseif coll isa ContiguousArrayOfVariables{1} && length(args) == 2
         v = _getindex_concrete1(coll, args, values)
         push!(out.terms, MOI.ScalarAffineTerm(coef, v))
-    elseif coll isa ContiguousArrayOfVariables{2}
+    elseif coll isa ContiguousArrayOfVariables{2} && length(args) == 3
         v = _getindex_concrete2(coll, args, values)
         push!(out.terms, MOI.ScalarAffineTerm(coef, v))
     elseif coll isa ContiguousArrayOfVariables
         v = _getindex_concrete(coll, args, values)
         push!(out.terms, MOI.ScalarAffineTerm(coef, v))
-    elseif coll isa Vector{T}
+    elseif coll isa Vector{T} && length(args) == 2
         x = _getindex_concrete1(coll, args, values)
         out.constant += coef * x
-    elseif coll isa Matrix{T}
+    elseif coll isa Matrix{T} && length(args) == 3
         x = _getindex_concrete2(coll, args, values)
         out.constant += coef * x
     elseif coll isa AbstractArray{<:Number}
@@ -463,27 +477,83 @@ end
     end
 end
 
-@inline _getindex_concrete1(coll, args, values) =
-    getindex(coll, _to_int(args[2], values))
+@inline function _integer_index(x, values)
+    if x isa IteratorIndex
+        return _integer_index(values[x.value], values)
+    elseif x isa MOI.ScalarNonlinearFunction && x.head === :getindex
+        args = x.args
+        if length(args) == 2 && args[1] isa IteratorIndex && args[2] isa Int
+            value = getindex(values[args[1].value], args[2])
+            return value isa Integer || value isa AbstractFloat
+        end
+        return _integer_index_fallback(x, values)
+    end
+    return x isa Integer ||
+           x isa AbstractFloat ||
+           x isa MOI.ScalarNonlinearFunction
+end
 
-@inline _getindex_concrete2(coll, args, values) =
-    getindex(coll, _to_int(args[2], values), _to_int(args[3], values))
+@noinline function _integer_index_fallback(x, values)
+    value = _expand(x, values)
+    return value isa Integer || value isa AbstractFloat
+end
 
-@inline _getindex_concrete3(coll, args, values) = getindex(
-    coll,
-    _to_int(args[2], values),
-    _to_int(args[3], values),
-    _to_int(args[4], values),
-)
+@inline function _getindex_concrete1(coll, args, values)
+    if !_integer_index(args[2], values)
+        return _getindex_scalar_fallback(coll, args, values)
+    end
+    return getindex(coll, _to_int(args[2], values))
+end
+
+@inline function _getindex_concrete2(coll, args, values)
+    if !_integer_index(args[2], values) || !_integer_index(args[3], values)
+        return _getindex_scalar_fallback(coll, args, values)
+    end
+    return getindex(coll, _to_int(args[2], values), _to_int(args[3], values))
+end
+
+@inline function _getindex_concrete3(coll, args, values)
+    if any(k -> !_integer_index(args[k], values), 2:4)
+        return _getindex_scalar_fallback(coll, args, values)
+    end
+    return getindex(
+        coll,
+        _to_int(args[2], values),
+        _to_int(args[3], values),
+        _to_int(args[4], values),
+    )
+end
 
 function _getindex_concreteN(coll, args, values)
     n = length(args) - 1
+    if any(k -> !_integer_index(args[k], values), 2:length(args))
+        return _getindex_scalar_fallback(coll, args, values)
+    end
     idx = ntuple(k -> _to_int(args[k+1], values), n)
     return getindex(coll, idx...)
 end
 
-# `coll` here is `Any` (from `args[1]`); used as the slow / fallback path.
-_resolve_getindex(args, values) = _getindex_concrete(args[1], args, values)
+# Uncommon collections may themselves be templates, and their keys need not
+# be integers (for example, a dictionary indexed by an iterator of strings).
+function _resolve_getindex(args, values)
+    coll = _expand(args[1], values)
+    return _getindex_fallback(coll, args, values)
+end
+
+function _getindex_fallback(coll, args, values)
+    indices = [_to_index(_expand(arg, values)) for arg in args[2:end]]
+    return getindex(coll, indices...)
+end
+
+# The specialized array paths expect one scalar element. Keep their inferred
+# result concrete even when a Cartesian index requires general expansion.
+@noinline function _getindex_scalar_fallback(
+    coll::C,
+    args,
+    values,
+)::eltype(C) where {C}
+    return _getindex_fallback(coll, args, values)
+end
 
 # Resolves an `args[k]` slot to an `Int`. The `::Int` return annotation
 # erases the Any returned from the type-unstable `args[k]` lookup, so the
@@ -534,6 +604,11 @@ function _eval_index(x, values)::Float64
         elseif h === :^ && n == 2
             return _eval_index(args[1], values)^_eval_index(args[2], values)
         elseif h === :getindex && n >= 2
+            for k in 2:n
+                if !_integer_index(args[k], values)
+                    return Float64(_resolve_getindex(args, values))
+                end
+            end
             # The JuMP wrapper's `prepare(it::IteratorValues)` wraps each
             # iterator reference as `:getindex(IteratorIndex(k), value_index)`
             # because the iterator's stored values are tuples (see
@@ -541,7 +616,7 @@ function _eval_index(x, values)::Float64
             # `:getindex` nodes here so index expressions like `k + 1` work
             # under the JuMP-built path.
             coll = args[1]
-            v = coll isa IteratorIndex ? values[coll.value] : coll
+            v = _expand(coll, values)
             if n == 2
                 return Float64(getindex(v, _to_int(args[2], values)))
             elseif n == 3
@@ -557,6 +632,10 @@ function _eval_index(x, values)::Float64
                 return Float64(getindex(v, idx...))
             end
         else
+            value = _expand(x, values)
+            if value isa Number
+                return Float64(value)
+            end
             error(
                 "Cannot resolve `getindex` index: ScalarNonlinearFunction(:",
                 h,
@@ -581,8 +660,8 @@ function _try_const(::Type{T}, x, values) where {T}
     # `nothing`, so Julia infers `Union{T,Nothing}` and the caller's
     # `c isa T` check stays unboxed. We avoid the abstract `isa Number`
     # branch (its `T(::Number)` conversion widens the inferred return to
-    # `Any` and re-introduces ~16 B/call); other `Real` types should be
-    # converted to `Int` / `T` before being stored in the iterator values.
+    # `Any` and re-introduces ~16 B/call). Uncommon types are handled behind
+    # a typed, non-inlined fallback instead.
     if x isa T
         return x
     elseif x isa Int
@@ -596,12 +675,12 @@ function _try_const(::Type{T}, x, values) where {T}
         elseif v isa Int
             return T(v)
         else
-            return nothing
+            return _try_const_fallback(T, v, values)
         end
     elseif x isa MOI.ScalarNonlinearFunction
         return _try_const_snf(T, x, values)
     else
-        return nothing
+        return _try_const_fallback(T, x, values)
     end
 end
 
@@ -613,21 +692,55 @@ end
     # Handle the common `data_array[idx]` lookup pattern. Each branch returns
     # either `T` or `nothing`, so Julia infers the function's return type as
     # `Union{T,Nothing}` and the caller's `c isa T` check stays unboxed.
-    # Nested constant arithmetic on `:+`/`:-`/`:*`/`:/`/`:^` is intentionally
-    # not folded here: the resulting mutual recursion with `_try_const`
-    # widens the inferred return type to `Any` and re-introduces ~16 B/call.
-    # Templates that need a folded constant should pre-compute it.
+    # General constant folding stays behind a typed, non-inlined boundary:
+    # recursive inference here would introduce boxing on the hot path.
     if expr.head === :getindex
         coll = expr.args[1]
-        if coll isa Vector{T}
+        if coll isa Vector{T} && length(expr.args) == 2
             return _getindex_concrete1(coll, expr.args, values)
-        elseif coll isa Matrix{T}
+        elseif coll isa Matrix{T} && length(expr.args) == 3
             return _getindex_concrete2(coll, expr.args, values)
-        else
+        elseif coll isa ContiguousArrayOfVariables
             return nothing
         end
     end
-    return nothing
+    return _try_const_fallback(T, expr, values)
+end
+
+@noinline function _try_const_fallback(
+    ::Type{T},
+    expr,
+    values,
+)::Union{T,Nothing} where {T}
+    # Do not materialize a substituted tree merely to discover that a common
+    # polynomial contains variables. In particular, products of affine forms
+    # must keep using the fast quadratic builder without extra allocations.
+    if _contains_variable(expr, values)
+        return nothing
+    end
+    value = _expand(expr, values)
+    return value isa Number ? T(value) : nothing
+end
+
+# This check is deliberately conservative: an unrecognized variable lookup
+# may reach the general folder, but a known variable cannot be a constant.
+function _contains_variable(expr, values)
+    if expr isa MOI.VariableIndex
+        return true
+    elseif expr isa IteratorIndex
+        return _contains_variable(values[expr.value], values)
+    elseif expr isa MOI.ScalarNonlinearFunction
+        if expr.head === :getindex &&
+           expr.args[1] isa ContiguousArrayOfVariables
+            return true
+        end
+        for arg in expr.args
+            if _contains_variable(arg, values)
+                return true
+            end
+        end
+    end
+    return false
 end
 
 # --- In-place quadratic expansion ---
@@ -730,13 +843,7 @@ function _expand_quadratic!(
             out.constant += coef * c
             return
         end
-        throw(
-            InexactError(
-                :_expand_quadratic!,
-                MOI.ScalarQuadraticFunction{T},
-                expr,
-            ),
-        )
+        _expand_quadratic_fallback!(out, expr, values, coef)
     end
 end
 
@@ -767,6 +874,42 @@ function _expand_quadratic!(
     coef::T,
 ) where {T}
     return _expand_quadratic!(out, values[x.value], values, coef)
+end
+
+function _expand_quadratic!(
+    out::MOI.ScalarQuadraticFunction{T},
+    expr,
+    values,
+    coef::T,
+) where {T}
+    return _expand_quadratic_fallback!(out, expr, values, coef)
+end
+
+function _expand_quadratic_fallback!(
+    out::MOI.ScalarQuadraticFunction{T},
+    expr,
+    values,
+    coef::T,
+) where {T}
+    f = convert(MOI.ScalarQuadraticFunction{T}, _expand(expr, values))
+    for term in f.quadratic_terms
+        push!(
+            out.quadratic_terms,
+            MOI.ScalarQuadraticTerm(
+                coef * term.coefficient,
+                term.variable_1,
+                term.variable_2,
+            ),
+        )
+    end
+    for term in f.affine_terms
+        push!(
+            out.affine_terms,
+            MOI.ScalarAffineTerm(coef * term.coefficient, term.variable),
+        )
+    end
+    out.constant += coef * f.constant
+    return
 end
 
 # Push `coef * (saf1.constant + Σ t1.coef*v1) * (saf2.constant + Σ t2.coef*v2)`
