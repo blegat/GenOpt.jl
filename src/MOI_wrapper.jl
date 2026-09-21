@@ -24,20 +24,26 @@ end
     end
 """
 struct Iterator{T}
+    # Each value is a tuple: the first entry is the iterator's own value and
+    # mapping it through data appends a column. Appending never reorders or
+    # drops a column, so between two snapshots sharing an `identity` the one
+    # with the wider tuples is a superset of the other, and every recorded
+    # `value_index` stays valid in it.
     values::Vector{T}
-    # Mapped values append columns without changing the iterator's domain.
     identity::Base.RefValue{Nothing}
-    generation::Int
 end
 
-Iterator(values::Vector) = Iterator(values, Ref(nothing), 0)
-Iterator{T}(values) where {T} = Iterator{T}(values, Ref(nothing), 0)
+Iterator(values::Vector) = Iterator(values, Ref(nothing))
+Iterator{T}(values) where {T} = Iterator{T}(values, Ref(nothing))
 Iterator(values::AbstractArray) = Iterator(vec(collect(values)))
+
+# Number of columns, i.e. the iterator's own value plus one per data mapping.
+_arity(it::Iterator) = length(first(it.values))
 
 Base.length(it::Iterator) = length(it.values)
 
 function Base.show(io::IO, it::Iterator)
-    # The identity and mapping generation are implementation details.
+    # The identity is an implementation detail.
     print(io, typeof(it), "(")
     show(io, it.values)
     return print(io, ")")

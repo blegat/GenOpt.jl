@@ -199,7 +199,7 @@ function _merge_exprs(x, y)
                 ),
             )
         end
-        if iterator.generation > iterators[position].generation
+        if _arity(iterator) > _arity(iterators[position])
             iterators[position] = iterator
         end
         return position
@@ -438,8 +438,7 @@ function _new_values(f, iterators, index)
     values = map(iterator.values) do val
         return (val..., f(val))
     end
-    iterators[index.value] =
-        Iterator(values, iterator.identity, iterator.generation + 1)
+    iterators[index.value] = Iterator(values, iterator.identity)
     return IteratorValues(
         iterators,
         index,
