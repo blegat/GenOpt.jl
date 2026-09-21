@@ -296,7 +296,7 @@ function JuMP.moi_function(s::LazySum{E}) where {E}
 end
 
 function JuMP.jump_function_type(
-    model::JuMP.GenericModel,
+    model::JuMP.AbstractModel,
     ::Type{SumGenerator{F}},
 ) where {F}
     return LazySum{
@@ -314,7 +314,7 @@ function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
 end
 
 function JuMP.jump_function_type(
-    model::JuMP.GenericModel,
+    model::JuMP.AbstractModel,
     ::Type{FilteredSumGenerator{F}},
 ) where {F}
     return FilteredLazySum{
