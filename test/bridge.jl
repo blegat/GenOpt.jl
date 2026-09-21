@@ -201,6 +201,10 @@ function test_expand_constant()
     func = MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1.0])
     result = GenOpt._expand(func, [5.0])
     @test result == 6.0
+    for (head, expected) in ((:+, 0.0), (:*, 1.0))
+        empty = MOI.ScalarNonlinearFunction(head, Any[])
+        @test GenOpt._expand(empty, Any[]) === expected
+    end
 end
 
 function test_expand_variable()
@@ -358,6 +362,45 @@ function test_build_computed_constants()
                 ) for i in 1:2
             ],
         )
+    end
+    return
+end
+
+function test_build_computed_constants_precision()
+    index = GenOpt.IteratorIndex(1)
+    x = MOI.VariableIndex(1)
+    for T in (Float32, Float64, BigFloat)
+        value = nextfloat(one(T))
+        for (head, args, expected) in
+            ((:exp, Any[index], exp(value)), (:-, Any[index, 1], value - 1))
+            coefficient = MOI.ScalarNonlinearFunction(head, args)
+            folded = GenOpt._expand(coefficient, Any[value])
+            @test folded isa T
+            @test folded == expected
+            product = MOI.ScalarNonlinearFunction(:*, Any[coefficient, x])
+            for F in
+                (MOI.ScalarAffineFunction{T}, MOI.ScalarQuadraticFunction{T})
+                expanded = GenOpt._build_function(F, product, Any[value])
+                # Approximate equality could miss the Float64 round-trip.
+                terms =
+                    expanded isa MOI.ScalarAffineFunction ? expanded.terms :
+                    expanded.affine_terms
+                @test only(terms).coefficient == expected
+                reference = convert(
+                    F,
+                    MOI.ScalarAffineFunction(
+                        [MOI.ScalarAffineTerm(expected, x)],
+                        zero(T),
+                    ),
+                )
+                _test_build_function_and_bridge(
+                    T,
+                    product,
+                    [value],
+                    [reference],
+                )
+            end
+        end
     end
     return
 end

@@ -48,6 +48,8 @@ end
 # `_build_function(F, expr, values)` walks the template once and produces a
 # concrete `F`. Affine and quadratic templates use specialized builders;
 # other function types retain the general expansion-and-conversion path.
+# Iterator values need not have coefficient type T: in `i * x[i]`, integer
+# `i` must become T as a coefficient but remain an integer as an index.
 
 function _build_function(
     ::Type{MOI.ScalarAffineFunction{T}},
@@ -73,6 +75,7 @@ function _build_function(
     return out
 end
 
+# Covers VariableIndex and ScalarNonlinearFunction, including folded constants.
 function _build_function(::Type{F}, expr, values) where {F}
     return convert(F, _expand(expr, values))
 end
@@ -174,7 +177,9 @@ _to_index(x) = x
 
 function _eval_op(head::Symbol, args::Vector)
     registry = MOI.Nonlinear.OperatorRegistry()
-    float_args = Float64.(args)
+    # MOI evaluates in the argument type, so operations like sin need floating
+    # inputs. Promote first to preserve Float32 or BigFloat operand precision.
+    float_args = isempty(args) ? Float64[] : collect(float.(promote(args...)))
     if length(float_args) == 1
         return MOI.Nonlinear.eval_univariate_function(
             registry,
