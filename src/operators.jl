@@ -171,7 +171,6 @@ function _multivariate(f, op, x, y)
         _variable_ref_type(y),
         JuMP.VariableRef, # FIXME needed if both are iterators
     )
-    nl = JuMP.GenericNonlinearExpr{V}(op, _expr(x), _expr(y))
     if op == :^ && y == 1
         E = _type(x)
     elseif op == :^ && y == 2
@@ -179,6 +178,14 @@ function _multivariate(f, op, x, y)
     else
         E = MA.promote_operation(f, _type(x), _type(y))
     end
+    x_expr, y_expr = _expr(x), _expr(y)
+    if E <: JuMP.AbstractJuMPScalar
+        T = JuMP.value_type(V)
+        x_expr = x_expr isa Real ? convert(T, x_expr) : x_expr
+        # Preserve integer exponents, including the quadratic case above.
+        y_expr = y_expr isa Real && op != :^ ? convert(T, y_expr) : y_expr
+    end
+    nl = JuMP.GenericNonlinearExpr{V}(op, x_expr, y_expr)
     return ExprTemplate{E}(nl, _check_equal(_iterators(x), _iterators(y)))
 end
 
