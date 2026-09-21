@@ -25,11 +25,23 @@ end
 """
 struct Iterator{T}
     values::Vector{T}
+    # Mapped values append columns without changing the iterator's domain.
+    identity::Base.RefValue{Nothing}
+    generation::Int
 end
 
+Iterator(values::Vector) = Iterator(values, Ref(nothing), 0)
+Iterator{T}(values) where {T} = Iterator{T}(values, Ref(nothing), 0)
 Iterator(values::AbstractArray) = Iterator(vec(collect(values)))
 
 Base.length(it::Iterator) = length(it.values)
+
+function Base.show(io::IO, it::Iterator)
+    # The identity and mapping generation are implementation details.
+    print(io, typeof(it), "(")
+    show(io, it.values)
+    return print(io, ")")
+end
 
 struct IteratorIndex
     value::Int

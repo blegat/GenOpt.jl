@@ -211,6 +211,20 @@ function test_template_coefficient_conversion()
     return
 end
 
+function test_data_array_multiple_iterator_indices()
+    data = [3.0, 5.0, 7.0, 11.0, 13.0, 17.0]
+    i = GenOpt.iterator(0:1)
+    j = GenOpt.iterator(0:2)
+    expr = data[3*i+j+1]
+    @test expr isa ExprTemplate{Float64,JuMP.VariableRef}
+    @test length.(expr.iterators) == [2, 3]
+    func = JuMP.moi_function(expr.expr)
+    for a in 0:1, b in 0:2
+        @test GenOpt._expand(func, [(a,), (b,)]) == data[3*a+b+1]
+    end
+    return
+end
+
 function test_multivariate()
     i, j = GenOpt.iterators(([2, -3], [1, -1]))
     _test_template(i + 1, [3, -2])
@@ -223,6 +237,69 @@ function test_multivariate()
     @test ijx isa GenOpt.ExprTemplate{JuMP.AffExpr,JuMP.VariableRef}
     ijxx = ijx * x
     @test ijxx isa GenOpt.ExprTemplate{JuMP.QuadExpr,JuMP.VariableRef}
+end
+
+function test_independent_iterators()
+    @test GenOpt.Iterator{Int}([1, 2]).values == [1, 2]
+    i = GenOpt.iterator([1, 2])
+    j = GenOpt.iterator([10, 20, 30])
+    expr = i + j
+    @test expr isa GenOpt.ExprTemplate{Int,JuMP.VariableRef}
+    @test length.(expr.iterators) == [2, 3]
+    @test GenOpt.index_iterators(expr.expr, ((2,), (30,))) == 32
+    reverse_expr = j + i
+    combined = expr + reverse_expr
+    @test length.(combined.iterators) == [2, 3]
+    @test GenOpt.index_iterators(combined.expr, ((2,), (30,))) == 64
+    @test length((i + i).iterators) == 1
+    same_values = GenOpt.iterator([1, 2])
+    @test length((i + same_values).iterators) == 2
+    return
+end
+
+function test_independent_iterators_mapped_values()
+    i = GenOpt.iterator([1, 2])
+    j = GenOpt.iterator([10, 20])
+    old_expr = i + j
+    data = [3, 5]
+    mapped = data[i]
+    expr = old_expr + mapped
+    @test length.(expr.iterators) == [2, 2]
+    @test GenOpt.index_iterators(expr.expr, ((2, 5), (20,))) == 27
+    second_map = [7, 11][i]
+    expr = expr + second_map
+    @test length.(expr.iterators) == [2, 2]
+    @test GenOpt.index_iterators(expr.expr, ((2, 5, 11), (20,))) == 38
+    @test length(first(expr.iterators).values[1]) == 3
+    @test length(first(old_expr.iterators).values[1]) == 1
+    return
+end
+
+function test_divergent_iterator_mappings()
+    i = GenOpt.iterator([1, 2])
+    j = GenOpt.iterator([1])
+    merged = (i + j).iterators
+    a = GenOpt.IteratorValues(copy(merged), GenOpt.IteratorIndex(1), 1)
+    b = GenOpt.IteratorValues(copy(merged), GenOpt.IteratorIndex(1), 1)
+    left = [10, 20][a]
+    right = [100, 200][b]
+    @test_throws ArgumentError left + right
+    later = [1000, 2000][b]
+    @test_throws ArgumentError left + later
+    return
+end
+
+function test_independent_iterators_matrix_index()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:2, 1:3])
+    i = GenOpt.iterator([1, 2])
+    j = GenOpt.iterator([1, 2, 3])
+    expr = x[i, j]
+    @test expr isa GenOpt.ExprTemplate{JuMP.VariableRef,JuMP.VariableRef}
+    @test length.(expr.iterators) == [2, 3]
+    f = JuMP.moi_function(expr.expr)
+    @test GenOpt._expand(f, [(2,), (3,)]) == JuMP.index(x[2, 3])
+    return
 end
 
 function test_lazy_sum_sum()
