@@ -158,11 +158,57 @@ _type(::ExprTemplate{E}) where {E} = E
 _type(f::JuMP.AbstractJuMPScalar) = typeof(f)
 _type(f::Number) = typeof(f)
 
-_check_equal(it::Iterators, ::Nothing) = it
-_check_equal(::Nothing, it::Iterators) = it
-function _check_equal(a::Iterators, b::Iterators)
-    #@assert a === b # reenable, workaroudn for promote_operation
-    return a
+_reindex(expr, _) = expr
+function _reindex(index::IteratorIndex, positions)
+    return IteratorIndex(positions[index.value])
+end
+function _reindex(expr::JuMP.GenericNonlinearExpr{V}, positions) where {V}
+    return JuMP.GenericNonlinearExpr{V}(
+        expr.head,
+        Any[_reindex(arg, positions) for arg in expr.args],
+    )
+end
+
+function _compatible_mappings(a::Iterator, b::Iterator)
+    return length(a) == length(b) && all(zip(a.values, b.values)) do (x, y)
+        return all(k -> isequal(x[k], y[k]), 1:min(length(x), length(y)))
+    end
+end
+
+function _merge_exprs(x, y)
+    a, b = _iterators(x), _iterators(y)
+    if isnothing(a) || a === b
+        return _expr(x), _expr(y), b
+    elseif isnothing(b)
+        return _expr(x), _expr(y), a
+    end
+    iterators = Iterator[]
+    positions = IdDict{Base.RefValue{Nothing},Int}()
+    function append_iterator(iterator)
+        position = get!(positions, iterator.identity) do
+            push!(iterators, iterator)
+            return length(iterators)
+        end
+        previous = iterators[position]
+        if previous !== iterator &&
+           previous.values !== iterator.values &&
+           !_compatible_mappings(previous, iterator)
+            throw(
+                ArgumentError(
+                    "Cannot combine divergent mappings of the same iterator",
+                ),
+            )
+        end
+        if _arity(iterator) > _arity(iterators[position])
+            iterators[position] = iterator
+        end
+        return position
+    end
+    a_positions = map(append_iterator, a)
+    b_positions = map(append_iterator, b)
+    return _reindex(_expr(x), a_positions),
+    _reindex(_expr(y), b_positions),
+    iterators
 end
 
 function _multivariate(f, op, x, y)
@@ -171,6 +217,7 @@ function _multivariate(f, op, x, y)
         _variable_ref_type(y),
         JuMP.VariableRef, # FIXME needed if both are iterators
     )
+    x_expr, y_expr, iterators = _merge_exprs(x, y)
     if op == :^ && y == 1
         E = _type(x)
     elseif op == :^ && y == 2
@@ -178,7 +225,6 @@ function _multivariate(f, op, x, y)
     else
         E = MA.promote_operation(f, _type(x), _type(y))
     end
-    x_expr, y_expr = _expr(x), _expr(y)
     if E <: JuMP.AbstractJuMPScalar
         T = JuMP.value_type(V)
         x_expr = x_expr isa Real ? convert(T, x_expr) : x_expr
@@ -186,7 +232,7 @@ function _multivariate(f, op, x, y)
         y_expr = y_expr isa Real && op != :^ ? convert(T, y_expr) : y_expr
     end
     nl = JuMP.GenericNonlinearExpr{V}(op, x_expr, y_expr)
-    return ExprTemplate{E}(nl, _check_equal(_iterators(x), _iterators(y)))
+    return ExprTemplate{E}(nl, iterators)
 end
 
 # TODO move to JuMP
@@ -389,9 +435,10 @@ end
 
 function _new_values(f, iterators, index)
     iterator = iterators[index.value]
-    iterators[index.value] = Iterator(map(iterator.values) do val
+    values = map(iterator.values) do val
         return (val..., f(val))
-    end)
+    end
+    iterators[index.value] = Iterator(values, iterator.identity)
     return IteratorValues(
         iterators,
         index,
@@ -426,11 +473,36 @@ _data_index(::Dict, key) = key
 # of the iterator and the result is looked up eagerly, appending it to the
 # iterator values like `getindex(::Array, ::IteratorValues)` does.
 function _getindex(d, t::ExprTemplate)
-    index = only(unique!(_push_indices!(IteratorIndex[], t.expr)))
+    indices = unique!(_push_indices!(IteratorIndex[], t.expr))
+    if length(indices) > 1
+        return _deferred_getindex(d, t)
+    end
+    index = only(indices)
     return _new_values(t.iterators, index) do val
         values = ntuple(k -> k == index.value ? val : (), length(t.iterators))
         return d[_data_index(d, index_iterators(t.expr, values))]
     end
+end
+
+struct _DataArray{T,N,A<:AbstractArray{T,N}} <: AbstractArray{T,N}
+    data::A
+end
+
+Base.size(array::_DataArray) = size(array.data)
+Base.getindex(array::_DataArray, indices...) = getindex(array.data, indices...)
+JuMP._is_real(::_DataArray) = true
+JuMP.moi_function(array::_DataArray) = array
+JuMP.jump_function(_, array::_DataArray) = array
+
+# A lookup involving several domains cannot be appended to one iterator's
+# values. Keep it symbolic until the Cartesian product is expanded instead.
+function _deferred_getindex(
+    array::Array{T},
+    index::ExprTemplate{<:Real,V},
+) where {T<:Real,V}
+    expr =
+        JuMP.GenericNonlinearExpr{V}(:getindex, _DataArray(array), _expr(index))
+    return ExprTemplate{T}(expr, _iterators(index))
 end
 
 function _getindex_variable_array(
@@ -495,13 +567,9 @@ function Base.getindex(
     i::_ScalarWithIterator,
     j::_ScalarWithIterator,
 ) where {V<:JuMP.AbstractVariableRef}
-    nl = JuMP.GenericNonlinearExpr{V}(
-        :getindex,
-        to_generator(v),
-        _expr(i),
-        _expr(j),
-    )
-    return ExprTemplate{V}(nl, _check_equal(_iterators(i), _iterators(j)))
+    i_expr, j_expr, iterators = _merge_exprs(i, j)
+    nl = _getindex_expr(v, i_expr, j_expr)
+    return ExprTemplate{V}(nl, iterators)
 end
 
 # Support indexing a `DenseAxisArray` of variables (e.g. `@variable(model, vm[keys(ref[:bus])])`,
