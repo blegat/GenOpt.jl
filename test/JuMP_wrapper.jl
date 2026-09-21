@@ -61,6 +61,26 @@ function test_container()
     @test_broken JuMP.isequal_canonical(con_expr, expr)
 end
 
+function test_generator_variable_ownership()
+    model, other = Model(), Model()
+    @variable(model, x[1:2])
+    @variable(other, foreign[1:2])
+    i = GenOpt.iterator([1, 2])
+    @test JuMP.check_belongs_to_model(x[i], model) === nothing
+    @test JuMP.check_belongs_to_model(GenOpt.LazySum(x[i]), model) === nothing
+    for expr in (foreign[i], x[i] + foreign[i], (x[i] + 1.0) * foreign[i])
+        @test_throws VariableNotOwned JuMP.check_belongs_to_model(expr, model)
+    end
+    @test_throws VariableNotOwned JuMP.check_belongs_to_model(
+        GenOpt.LazySum(foreign[i]),
+        model,
+    )
+    constraint =
+        JuMP.build_constraint(error, x[i] + foreign[i], MOI.LessThan(0.0))
+    @test_throws VariableNotOwned JuMP.check_belongs_to_model(constraint, model)
+    return
+end
+
 function test_ind2sub()
     # `bridge.jl` expands a generator with `CartesianIndices` so `_ind2sub`
     # must agree with it, otherwise `getindex` and the bridge would disagree

@@ -40,6 +40,35 @@ function Base.getindex(A::ArrayOfVariables{T}, I...) where {T}
     return JuMP.GenericVariableRef{T}(A.model, MOI.VariableIndex(index))
 end
 
+function JuMP.check_belongs_to_model(
+    array::ArrayOfVariables,
+    model::JuMP.AbstractModel,
+)
+    if array.model !== model && !isempty(array)
+        throw(JuMP.VariableNotOwned(first(array)))
+    end
+    return
+end
+
+_check_belongs_to_model(::Any, ::JuMP.AbstractModel) = nothing
+
+function _check_belongs_to_model(
+    expr::Union{JuMP.AbstractJuMPScalar,ArrayOfVariables},
+    model::JuMP.AbstractModel,
+)
+    return JuMP.check_belongs_to_model(expr, model)
+end
+
+function _check_belongs_to_model(
+    expr::JuMP.GenericNonlinearExpr,
+    model::JuMP.AbstractModel,
+)
+    for arg in expr.args
+        _check_belongs_to_model(arg, model)
+    end
+    return
+end
+
 JuMP._is_real(::ArrayOfVariables) = true
 function JuMP.moi_function(array::ArrayOfVariables)
     return ContiguousArrayOfVariables(array.offset, array.size)
