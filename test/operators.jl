@@ -192,6 +192,25 @@ function test_univariate()
     return
 end
 
+function test_template_coefficient_conversion()
+    for T in (Float32, Float64)
+        model = JuMP.GenericModel{T}()
+        JuMP.@variable(model, x[1:3])
+        i = GenOpt.iterator([1, 2, 3])
+        @test (i+1).expr.args[2] === 1
+        @test (x[i]+0).expr.args[2] === zero(T)
+        @test (0+x[i]).expr.args[1] === zero(T)
+        @test (1*x[i]).expr.args[1] === one(T)
+        @test (x[i]*1).expr.args[2] === one(T)
+        @test (x[i]/2).expr.args[2] === T(2)
+        quadratic = x[i]^2
+        V = JuMP.variable_ref_type(model)
+        @test quadratic isa GenOpt.ExprTemplate{JuMP.GenericQuadExpr{T,V},V}
+        @test quadratic.expr.args[2] === 2
+    end
+    return
+end
+
 function test_multivariate()
     i, j = GenOpt.iterators(([2, -3], [1, -1]))
     _test_template(i + 1, [3, -2])
