@@ -212,6 +212,63 @@ function test_expand_variable()
     @test result == MOI.VariableIndex(2)
 end
 
+function test_build_nested_quadratic()
+    for T in (Float32, Float64)
+        model = MOI.Utilities.Model{T}()
+        variables = MOI.add_variables(model, 3)
+        block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+        indexed = MOI.ScalarNonlinearFunction(
+            :getindex,
+            Any[block, GenOpt.IteratorIndex(1)],
+        )
+        template = MOI.ScalarNonlinearFunction(
+            :-,
+            Any[
+                MOI.ScalarNonlinearFunction(
+                    :*,
+                    Any[
+                        MOI.ScalarNonlinearFunction(:+, Any[indexed, 1]),
+                        MOI.ScalarNonlinearFunction(:-, Any[indexed, 2]),
+                    ],
+                ),
+                9,
+            ],
+        )
+        F, S = MOI.ScalarQuadraticFunction{T}, MOI.LessThan{T}
+        expanded = GenOpt._build_function(F, template, Any[2])
+        @test expanded isa F
+        MOI.Utilities.canonicalize!(expanded)
+        @test expanded.quadratic_terms ==
+              [MOI.ScalarQuadraticTerm(T(2), variables[2], variables[2])]
+        @test expanded.affine_terms ==
+              [MOI.ScalarAffineTerm(-one(T), variables[2])]
+        @test expanded.constant === T(-11)
+        func = GenOpt.FunctionGenerator{F}(
+            template,
+            GenOpt.Iterator[GenOpt.Iterator([1, 2, 3])],
+        )
+        bridge = MOI.Bridges.Constraint.bridge_constraint(
+            GenOpt.FunctionGeneratorBridge{T,F,S},
+            model,
+            func,
+            MOI.Nonpositives(3),
+        )
+        @test length(bridge.constraints) == 3
+        for (index, variable) in zip(bridge.constraints, variables)
+            expanded = MOI.get(model, MOI.ConstraintFunction(), index)
+            MOI.Utilities.canonicalize!(expanded)
+            @test expanded.quadratic_terms ==
+                  [MOI.ScalarQuadraticTerm(T(2), variable, variable)]
+            @test expanded.affine_terms ==
+                  [MOI.ScalarAffineTerm(-one(T), variable)]
+            @test expanded.constant === zero(T)
+            @test MOI.get(model, MOI.ConstraintSet(), index) ==
+                  MOI.LessThan(T(11))
+        end
+    end
+    return
+end
+
 function test_affine_jump_wrapped_iterator_index()
     # The JuMP wrapper's `prepare(it::IteratorValues)` produces SNFs of the form
     # `SNF(:getindex, [IteratorIndex(k), value_index])` because iterator values
