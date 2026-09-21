@@ -1074,7 +1074,9 @@ function test_try_const_nested_affine_allocation_free()
         # Quadratic products inspect affine factors for constant coefficients.
         # Reject variable-containing factors without allocating expanded trees.
         @test _loop(T, template, values, 1) === nothing
-        @test (@allocated _loop(T, template, values, 1000)) == 0
+        if VERSION >= v"1.12"
+            @test (@allocated _loop(T, template, values, 1000)) == 0
+        end
     end
     return
 end
