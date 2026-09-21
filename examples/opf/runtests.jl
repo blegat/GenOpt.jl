@@ -1,3 +1,5 @@
+module TestOPF
+
 using Test
 import MathOptInterface as MOI
 import PGLib
@@ -55,3 +57,5 @@ end
     obj = MOI.get(b, MOI.ObjectiveFunction{F}())
     @test prod(it -> length(it.values), obj.iterators) == 3
 end
+
+end  # module TestOPF
