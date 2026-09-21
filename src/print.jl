@@ -71,3 +71,18 @@ end
 function Base.show(io::IO, v::ArrayOfVariables)
     return show(io, MIME"text/plain"(), v)
 end
+
+function MOI.Utilities._to_string(options::MOI.Utilities._PrintOptions, model, i::ContiguousArrayOfVariables)
+    # TODO
+    return "X"
+end
+
+function MOI.Utilities._to_string(options::MOI.Utilities._PrintOptions, model, i::IteratorIndex)
+    # TODO
+    return "i_$(i.value)"
+end
+
+function MOI.Utilities._to_string(options::MOI.Utilities._PrintOptions, model, f::SumGenerator)
+    # TODO
+    return "∑ " * MOI.Utilities._to_string(options, model, f.func)
+end
