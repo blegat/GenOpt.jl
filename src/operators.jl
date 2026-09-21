@@ -42,7 +42,7 @@ end
 JuMP.variable_ref_type(::Type{ExprTemplate{E,V}}) where {E,V} = V
 
 function JuMP.check_belongs_to_model(f::ExprTemplate, model)
-    return JuMP.check_belongs_to_model(f.expr, model)
+    return _check_belongs_to_model(f.expr, model)
 end
 
 """
@@ -277,7 +277,7 @@ Base.iszero(::_AnyLazySum) = false
 JuMP.owner_model(s::_AnyLazySum) = JuMP.owner_model(s.expr)
 
 function JuMP.check_belongs_to_model(s::_AnyLazySum, model::JuMP.AbstractModel)
-    return JuMP.check_belongs_to_model(s.expr, model)
+    return _check_belongs_to_model(s.expr, model)
 end
 
 function MA.promote_operation(
