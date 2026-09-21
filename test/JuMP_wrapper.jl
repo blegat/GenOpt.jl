@@ -24,6 +24,109 @@ function runtests()
     return
 end
 
+# A minimal JuMP extension keeps the model/backend and variable-reference types
+# concrete without requiring a development version of JuMP.
+struct ExtensionModel{T,B<:MOI.ModelLike} <: JuMP.AbstractModel
+    backend::B
+end
+
+struct ExtensionVariable{M<:ExtensionModel} <: JuMP.AbstractVariableRef
+    model::M
+    index::MOI.VariableIndex
+end
+
+JuMP.value_type(::Type{<:ExtensionModel{T}}) where {T} = T
+JuMP.value_type(::Type{ExtensionVariable{M}}) where {M} = JuMP.value_type(M)
+function JuMP.variable_ref_type(::Type{M}) where {M<:ExtensionModel}
+    return ExtensionVariable{M}
+end
+JuMP.owner_model(variable::ExtensionVariable) = variable.model
+JuMP.index(variable::ExtensionVariable) = variable.index
+JuMP.backend(model::ExtensionModel) = model.backend
+function JuMP.jump_function_type(
+    model::ExtensionModel,
+    ::Type{MOI.VariableIndex},
+)
+    return JuMP.variable_ref_type(model)
+end
+function MOI.get(model::ExtensionModel, attr::MOI.AbstractModelAttribute)
+    return MOI.get(JuMP.backend(model), attr)
+end
+function JuMP.constraint_ref_with_index(
+    model::ExtensionModel,
+    index::MOI.ConstraintIndex{
+        <:MOI.AbstractVectorFunction,
+        <:MOI.AbstractVectorSet,
+    },
+)
+    return JuMP.ConstraintRef(model, index, JuMP.VectorShape())
+end
+
+function test_extension_variable_arrays()
+    for T in (Float32, Float64)
+        backend = MOI.Utilities.UniversalFallback(MOI.Utilities.Model{T}())
+        model = ExtensionModel{T,typeof(backend)}(backend)
+        V = JuMP.variable_ref_type(model)
+        variables = [V(model, index) for index in MOI.add_variables(backend, 4)]
+        array = reshape(variables, 2, 2)
+        generated = GenOpt.to_generator(array)
+        @test generated isa GenOpt.ArrayOfVariables{T,2,V,typeof(model)}
+        @test typeof(GenOpt.ArrayOfVariables(model, 0, size(array))) ===
+              typeof(generated)
+        other_type = T === Float32 ? Float64 : Float32
+        @test_throws ArgumentError GenOpt.ArrayOfVariables{other_type,2}(
+            model,
+            0,
+            size(array),
+        )
+        @test eltype(generated) === V
+        @test generated.model === model
+        @test size(generated) == (2, 2)
+        @test JuMP.index(generated[2, 1]) == JuMP.index(array[2, 1])
+        @test JuMP.owner_model(generated[1, 2]) === model
+
+        moi_array = JuMP.moi_function(generated)
+        @test moi_array isa GenOpt.ContiguousArrayOfVariables{2}
+        restored = JuMP.jump_function(model, moi_array)
+        @test typeof(restored) === typeof(generated)
+        @test restored.model === model
+        @test [JuMP.index(restored[i, j]) for i in 1:2, j in 1:2] == JuMP.index.(array)
+
+        i = GenOpt.iterator(1:2)
+        template = array[i, 1]
+        @test template isa GenOpt.ExprTemplate{V,V}
+        generator = GenOpt.ExprGenerator(template)
+        constraint =
+            JuMP.build_constraint(error, generator, MOI.Nonnegatives(2))
+        @test constraint isa GenOpt.IteratedConstraint{V,V,MOI.Nonnegatives}
+        F = GenOpt.FunctionGenerator{MOI.VariableIndex}
+        @test JuMP.moi_function_type(typeof(generator)) === F
+        @test JuMP.jump_function_type(model, F) === typeof(generator)
+        @test JuMP.jump_function_type(
+            model,
+            GenOpt.SumGenerator{MOI.VariableIndex},
+        ) === GenOpt.LazySum{V,V}
+        @test JuMP.jump_function_type(
+            model,
+            GenOpt.FilteredSumGenerator{MOI.VariableIndex},
+        ) === GenOpt.FilteredLazySum{V,V}
+
+        function_ = JuMP.moi_function(generator)
+        index = MOI.add_constraint(backend, function_, constraint.set)
+        @test JuMP.num_constraints(
+            model,
+            typeof(generator),
+            MOI.Nonnegatives,
+        ) == 1
+        references =
+            JuMP.all_constraints(model, typeof(generator), MOI.Nonnegatives)
+        @test length(references) == 1
+        @test JuMP.index(only(references)) == index
+        @test JuMP.owner_model(only(references)) === model
+    end
+    return
+end
+
 function test_container()
     model = Model()
     @variable(model, x)
