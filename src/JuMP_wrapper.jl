@@ -15,7 +15,8 @@ include("operators.jl")
     end
 
 Iterator `iterators[index.value]`.
-""" # TODO remove
+"""
+# TODO remove
 struct IteratorInExpr
     iterators::Iterators
     index::IteratorIndex
