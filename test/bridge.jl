@@ -3,12 +3,16 @@
 # Use of this source code is governed by an MIT-style license that can be found
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
+# Scope: the MOI bridge, end to end with a solver (HiGHS). Add new tests that need an
+# actual `optimize!` of a bridged model here rather than in a new file.
+
 module TestBridge
 
 using Test
 import MathOptInterface as MOI
 import GenOpt
 import HiGHS
+import JuMP
 
 function runtests()
     for name in names(@__MODULE__; all = true)
@@ -413,6 +417,32 @@ function test_equality_constraint_group()
     for xi in x
         @test MOI.get(optimizer, MOI.VariablePrimal(), xi) ≈ 5.0 atol = 1e-6
     end
+end
+
+# Integration test for using a non-`Vector` index set (e.g. `keys(dict)`) with a GenOpt
+# `container` constraint.
+#
+# Why it is useful: models are frequently indexed by the keys of a `Dict` (component ids,
+# names, ...) rather than by `1:n`, exactly like PowerModels. `keys(dict)` is iterable but not
+# integer-indexable, so the iterator machinery must not assume `axe[1]`. This builds a
+# vectorized constraint indexed over `keys(dict)` and checks it solves.
+function test_constraint_indexed_over_dict_keys()
+    demand = Dict(1 => 3.0, 2 => 5.0, 3 => 4.0)
+    model = JuMP.direct_model(_create_optimizer())
+    JuMP.@variable(model, x[1:3, 1:1])
+    JuMP.@objective(model, Min, sum(x))
+    # Index the family of constraints by `keys(demand)`, not `1:n`.
+    JuMP.@constraint(
+        model,
+        [i in keys(demand)],
+        x[i, 1] >= demand[i],
+        container = GenOpt.ParametrizedArray,
+    )
+    JuMP.optimize!(model)
+    @test JuMP.termination_status(model) == MOI.OPTIMAL
+    @test JuMP.value(x[1, 1]) ≈ 3.0
+    @test JuMP.value(x[2, 1]) ≈ 5.0
+    @test JuMP.value(x[3, 1]) ≈ 4.0
 end
 
 end  # module

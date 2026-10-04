@@ -27,17 +27,45 @@ JuMP._is_real(::Union{IteratorInExpr,IteratorIndex}) = true
 JuMP.moi_function(i::Union{IteratorInExpr,IteratorIndex}) = i
 JuMP.jump_function(_, i::Union{IteratorInExpr,IteratorIndex}) = i
 
-struct ArrayOfVariables{T,N} <: AbstractArray{JuMP.GenericVariableRef{T},N}
-    model::JuMP.GenericModel{T}
+struct ArrayOfVariables{
+    T,
+    N,
+    V<:JuMP.AbstractVariableRef,
+    M<:JuMP.AbstractModel,
+} <: AbstractArray{V,N}
+    model::M
     offset::Int64
     size::NTuple{N,Int64}
 end
 
+function ArrayOfVariables{T,N}(
+    model::M,
+    offset::Int64,
+    size::NTuple{N,Int64},
+) where {T,N,M<:JuMP.AbstractModel}
+    T == JuMP.value_type(M) ||
+        throw(ArgumentError("Array coefficient type must match its model"))
+    V = JuMP.variable_ref_type(M)
+    return ArrayOfVariables{T,N,V,M}(model, offset, size)
+end
+
+function ArrayOfVariables(
+    model::JuMP.AbstractModel,
+    offset::Int64,
+    size::NTuple{N,Int64},
+) where {N}
+    return ArrayOfVariables{JuMP.value_type(typeof(model)),N}(
+        model,
+        offset,
+        size,
+    )
+end
+
 Base.size(array::ArrayOfVariables) = array.size
-function Base.getindex(A::ArrayOfVariables{T}, I...) where {T}
+function Base.getindex(A::ArrayOfVariables{T,N,V}, I...) where {T,N,V}
     index =
         A.offset + Base._to_linear_index(Base.CartesianIndices(A.size), I...)
-    return JuMP.GenericVariableRef{T}(A.model, MOI.VariableIndex(index))
+    return V(A.model, MOI.VariableIndex(index))
 end
 
 JuMP._is_real(::ArrayOfVariables) = true
@@ -45,16 +73,17 @@ function JuMP.moi_function(array::ArrayOfVariables)
     return ContiguousArrayOfVariables(array.offset, array.size)
 end
 function JuMP.jump_function(
-    model::JuMP.GenericModel{T},
+    model::JuMP.AbstractModel,
     array::ContiguousArrayOfVariables{N},
-) where {T,N}
+) where {N}
+    T = JuMP.value_type(typeof(model))
     return ArrayOfVariables{T,N}(model, array.offset, array.size)
 end
 
 function Base.convert(
     ::Type{ArrayOfVariables{T,N}},
-    array::Array{JuMP.GenericVariableRef{T},N},
-) where {T,N}
+    array::Array{V,N},
+) where {T,N,V<:JuMP.AbstractVariableRef}
     model = JuMP.owner_model(array[1])
     offset = JuMP.index(array[1]).value - 1
     for i in eachindex(array)
@@ -64,13 +93,18 @@ function Base.convert(
     return ArrayOfVariables{T,N}(model, offset, size(array))
 end
 
-function to_generator(array::Array{JuMP.GenericVariableRef{T},N}) where {T,N}
+function to_generator(array::Array{V,N}) where {V<:JuMP.AbstractVariableRef,N}
+    T = JuMP.value_type(V)
     return convert(ArrayOfVariables{T,N}, array)
 end
 
 struct ExprGenerator{E,V<:JuMP.AbstractVariableRef} <:
        AbstractVector{JuMP.GenericNonlinearExpr{V}}
     expr::ExprTemplate{E,V}
+end
+
+function JuMP.moi_function_type(::Type{ExprGenerator{E,V}}) where {E,V}
+    return FunctionGenerator{JuMP.moi_function_type(E)}
 end
 
 function JuMP.moi_function(f::ExprGenerator{E}) where {E}
@@ -80,6 +114,37 @@ function JuMP.moi_function(f::ExprGenerator{E}) where {E}
     )
 end
 
+function JuMP.jump_function_type(model, ::Type{FunctionGenerator{F}}) where {F}
+    return ExprGenerator{
+        JuMP.jump_function_type(model, F),
+        JuMP.variable_ref_type(model),
+    }
+end
+
+# `ExprGenerator` is an `AbstractVector` of expressions but not a `Vector`, so it does not
+# match `JuMP.num_constraints(::GenericModel, ::Type{<:Union{AbstractJuMPScalar,
+# Vector{<:AbstractJuMPScalar}}}, ::Type{<:MOI.AbstractSet})`, which `show(model)` calls for
+# every type of `list_of_constraint_types`.
+function JuMP.num_constraints(
+    model::JuMP.AbstractModel,
+    ::Type{F},
+    ::Type{S},
+) where {F<:ExprGenerator,S<:MOI.AbstractSet}
+    f_type = JuMP.moi_function_type(F)
+    return MOI.get(model, MOI.NumberOfConstraints{f_type,S}())
+end
+
+function JuMP.all_constraints(
+    model::JuMP.AbstractModel,
+    ::Type{F},
+    ::Type{S},
+) where {F<:ExprGenerator,S<:MOI.AbstractVectorSet}
+    f_type = JuMP.moi_function_type(F)
+    C = JuMP.ConstraintRef{typeof(model),MOI.ConstraintIndex{f_type,S}}
+    indices = MOI.get(model, MOI.ListOfConstraintIndices{f_type,S}())
+    return C[JuMP.constraint_ref_with_index(model, idx) for idx in indices]
+end
+
 function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
     return ExprGenerator(
         ExprTemplate{JuMP.jump_function_type(model, F)}(
@@ -87,16 +152,6 @@ function JuMP.jump_function(model, f::FunctionGenerator{F}) where {F}
             f.iterators,
         ),
     )
-end
-
-function JuMP.jump_function_type(
-    model::JuMP.GenericModel{T},
-    ::Type{FunctionGenerator{F}},
-) where {T,F}
-    return ExprGenerator{
-        JuMP.jump_function_type(model, F),
-        JuMP.GenericVariableRef{T},
-    }
 end
 
 _size(expr::ExprGenerator) = length.(expr.expr.iterators)
@@ -128,7 +183,7 @@ end
 function index_iterators(func::JuMP.GenericNonlinearExpr, values)
     args = map(Base.Fix2(index_iterators, values), func.args)
     if any(JuMP._has_variable_ref_type, args)
-        return JuMP.GenericNonlinearExpr(func.head, args)
+        return JuMP.GenericNonlinearExpr(func.head, args...)
     elseif func.head == :getindex
         # `JuMP.jump_function` converts every number to `Float64` when it
         # converts a `MOI` function back, so the indices need to be converted
@@ -179,9 +234,45 @@ function JuMP.build_constraint(
     return JuMP.build_constraint(error_fn, new_func, vector_set)
 end
 
+# Interval constraint `lb[i] <= f(i) <= ub[i]` under `container`: the bounds `lb`/`ub` are
+# looked up at the iterator `i` (so they are `IteratorValues`, or a plain number if constant).
+function JuMP.build_constraint(
+    error_fn::Function,
+    func::ExprTemplate,
+    lb::Union{IteratorValues,Real},
+    ub::Union{IteratorValues,Real},
+)
+    return _build_interval(error_fn, func, lb, ub)
+end
+
+# Disambiguate with `JuMP.build_constraint(::Function, ::JuMP.AbstractJuMPScalar, ::Real,
+# ::Real)` when both bounds are constant, e.g. `1 <= f(i) <= 2`. The generic JuMP method
+# would build a scalar `MOI.Interval` constraint, losing the generator structure.
+function JuMP.build_constraint(
+    error_fn::Function,
+    func::ExprTemplate,
+    lb::Real,
+    ub::Real,
+)
+    return _build_interval(error_fn, func, lb, ub)
+end
+
+function _build_interval(error_fn::Function, func::ExprTemplate, lb, ub)
+    new_func = ExprGenerator(func)
+    n = length(new_func)
+    set = MOI.HyperRectangle(_bound_values(lb, n), _bound_values(ub, n))
+    return JuMP.build_constraint(error_fn, new_func, set)
+end
+
+# Materialize a (possibly iterator-dependent) constraint bound into a length-`n` vector.
+function _bound_values(v::IteratorValues, n)
+    return [t[v.value_index] for t in v.iterators[v.index.value].values]
+end
+_bound_values(x::Real, n) = fill(float(x), n)
+
 struct IteratedConstraint{
     E,
-    V<:JuMP.GenericVariableRef,
+    V<:JuMP.AbstractVariableRef,
     S<:MOI.AbstractVectorSet,
 } <: JuMP.AbstractConstraint
     func::ExprGenerator{E,V}

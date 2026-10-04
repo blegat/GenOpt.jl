@@ -24,12 +24,30 @@ end
     end
 """
 struct Iterator{T}
+    # Each value is a tuple: the first entry is the iterator's own value and
+    # mapping it through data appends a column. Appending never reorders or
+    # drops a column, so between two snapshots sharing an `identity` the one
+    # with the wider tuples is a superset of the other, and every recorded
+    # `value_index` stays valid in it.
     values::Vector{T}
+    identity::Base.RefValue{Nothing}
 end
 
+Iterator(values::Vector) = Iterator(values, Ref(nothing))
+Iterator{T}(values) where {T} = Iterator{T}(values, Ref(nothing))
 Iterator(values::AbstractArray) = Iterator(vec(collect(values)))
 
+# Number of columns, i.e. the iterator's own value plus one per data mapping.
+_arity(it::Iterator) = length(first(it.values))
+
 Base.length(it::Iterator) = length(it.values)
+
+function Base.show(io::IO, it::Iterator)
+    # The identity is an implementation detail.
+    print(io, typeof(it), "(")
+    show(io, it.values)
+    return print(io, ")")
+end
 
 struct IteratorIndex
     value::Int
@@ -39,6 +57,7 @@ Base.copy(i::IteratorIndex) = i
 function Base.isapprox(a::IteratorIndex, b::IteratorIndex; kwargs...)
     return a.value == b.value
 end
+MOI.Utilities.map_indices(::Function, i::IteratorIndex) = i
 
 """
     struct IteratorRef
@@ -129,9 +148,37 @@ function Base.copy(f::SumGenerator{F}) where {F}
     return SumGenerator{F}(copy(f.func), f.iterators)
 end
 
+# Like a `JuMP.GenericNonlinearExpr{V}` but containing no JuMP variables
+# so `V` isn't defined
+struct FilterExpression
+    head::Symbol
+    args::Vector{Any}
+end
+
+struct FilteredSumGenerator{F} <: MOI.AbstractScalarFunction
+    func::MOI.ScalarNonlinearFunction
+    iterators::Vector{Iterator} # Slight type instability, we don't have `Iterator{T}`
+    filter::FilterExpression
+end
+
+function Base.copy(f::FilteredSumGenerator{F}) where {F}
+    return FilteredSumGenerator{F}(copy(f.func), f.iterators, f.filter)
+end
+
+function MOI.Utilities.is_canonical(s::Union{SumGenerator,FilteredSumGenerator})
+    return MOI.Utilities.is_canonical(s.func)
+end
+
+function MOI.Utilities.canonicalize!(
+    s::Union{SumGenerator,FilteredSumGenerator},
+)
+    MOI.Utilities.canonicalize!(s.func)
+    return s
+end
+
 function MOI.Utilities.map_indices(
     ::MOI.Utilities.IndexMap,
-    func::Union{FunctionGenerator,SumGenerator},
+    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
 )
     # TODO check it's identity
     return func
@@ -139,7 +186,7 @@ end
 
 function MOI.Utilities.map_indices(
     ::Function,
-    func::Union{FunctionGenerator,SumGenerator},
+    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
 )
     # TODO check it's identity
     return func
