@@ -142,9 +142,30 @@ function test_filtered_sum_moi_utilities()
     @test copied.filter === generator.filter
     @test MOI.Utilities.is_canonical(copied)
     @test MOI.Utilities.canonicalize!(copied) === copied
-    @test MOI.Utilities.map_indices(MOI.Utilities.IndexMap(), copied) === copied
-    @test MOI.Utilities.map_indices(identity, copied) === copied
+    mapped = MOI.Utilities.map_indices(identity, copied)
+    @test mapped isa GenOpt.FilteredSumGenerator
+    @test mapped.iterators === copied.iterators
+    @test mapped.filter === copied.filter
+    @test _arrays(mapped.func) == _arrays(copied.func)
+    # Shift the variables as `MOI.copy_to` does when, e.g., parameters are
+    # added first in the destination
+    index_map = MOI.Utilities.IndexMap()
+    for xi in x
+        vi = JuMP.index(xi)
+        index_map[vi] = MOI.VariableIndex(vi.value + 2)
+    end
+    mapped = MOI.Utilities.map_indices(index_map, copied)
+    @test _arrays(mapped.func) == [GenOpt.ContiguousArrayOfVariables(2, (3,))]
+    # The variables are no longer contiguous
+    index_map[JuMP.index(x[2])] = MOI.VariableIndex(10)
+    @test_throws ErrorException MOI.Utilities.map_indices(index_map, copied)
     return
+end
+
+_arrays(::Any) = GenOpt.ContiguousArrayOfVariables[]
+_arrays(a::GenOpt.ContiguousArrayOfVariables) = [a]
+function _arrays(f::MOI.ScalarNonlinearFunction)
+    return reduce(vcat, _arrays.(f.args); init = _arrays(nothing))
 end
 
 function test_jump_function_type()
