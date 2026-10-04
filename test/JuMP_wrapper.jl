@@ -127,6 +127,19 @@ function test_extension_variable_arrays()
     return
 end
 
+function test_variable_not_owned()
+    model = Model()
+    @variable(model, x[1:3])
+    other = Model()
+    @test_throws VariableNotOwned @constraint(
+        other,
+        [i in 1:3],
+        x[i] >= 0,
+        container = ParametrizedArray
+    )
+    return
+end
+
 function test_container()
     model = Model()
     @variable(model, x)

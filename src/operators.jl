@@ -41,7 +41,7 @@ end
 
 JuMP.variable_ref_type(::Type{ExprTemplate{E,V}}) where {E,V} = V
 
-function JuMP.check_belongs_to_model(f::ExprTemplate, model)
+function JuMP.check_belongs_to_model(f::ExprTemplate, model::JuMP.AbstractModel)
     return _check_belongs_to_model(f.expr, model)
 end
 
@@ -492,6 +492,9 @@ Base.size(array::_DataArray) = size(array.data)
 Base.getindex(array::_DataArray, indices...) = getindex(array.data, indices...)
 JuMP._is_real(::_DataArray) = true
 JuMP.moi_function(array::_DataArray) = array
+# The data does not contain any variable
+JuMP.check_belongs_to_model(::_DataArray, ::JuMP.AbstractModel) = nothing
+JuMP.moi_function(::JuMP.GenericModel, array::_DataArray) = array
 JuMP.jump_function(_, array::_DataArray) = array
 
 # A lookup involving several domains cannot be appended to one iterator's
