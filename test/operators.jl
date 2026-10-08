@@ -162,6 +162,28 @@ function test_filtered_sum_moi_utilities()
     return
 end
 
+function test_deferred_getindex_map_indices()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:2])
+    d = [1.0, 2.0, 3.0]
+    # `d[i + j]` involves two iterators so `d` is kept in the function
+    generator =
+        JuMP.moi_function(GenOpt.lazy_sum(d[i+j] * x[i] for i in 1:2, j in 1:1))
+    data = _data_arrays(generator.func)
+    @test length(data) == 1
+    @test only(data).data === d
+    mapped = MOI.Utilities.map_indices(identity, generator)
+    @test _data_arrays(mapped.func) == data
+    @test only(_data_arrays(mapped.func)) === only(data)
+    return
+end
+
+_data_arrays(::Any) = GenOpt._DataArray[]
+_data_arrays(a::GenOpt._DataArray) = [a]
+function _data_arrays(f::MOI.ScalarNonlinearFunction)
+    return reduce(vcat, _data_arrays.(f.args); init = _data_arrays(nothing))
+end
+
 _arrays(::Any) = GenOpt.ContiguousArrayOfVariables[]
 _arrays(a::GenOpt.ContiguousArrayOfVariables) = [a]
 function _arrays(f::MOI.ScalarNonlinearFunction)

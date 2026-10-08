@@ -145,6 +145,35 @@ function test_quadrotor_parameters()
     return
 end
 
+function test_single_sum_objective()
+    N = 4
+    model = Model()
+    @variable(model, x[1:N])
+    c = GenOpt.ParametrizedArray
+    @constraint(model, [i in 1:N], x[i] >= 2, container = c)
+    @constraint(model, [i in 1:N], x[i] <= 3, container = c)
+    @objective(model, Min, GenOpt.lazy_sum((x[i] - i)^2 for i in 1:N))
+    _optimize!(model)
+    @test objective_value(model) ≈ 2 atol = 1e-6
+    @test value.(x) ≈ [2, 2, 3, 3] atol = 1e-3
+    return
+end
+
+function test_deferred_getindex()
+    # `d[i + j]` involves two iterators so it is kept as a `getindex` of the
+    # data which is not supported by the extension
+    d = [1.0, 2.0, 3.0]
+    model = Model()
+    @variable(model, x[1:2])
+    @objective(
+        model,
+        Min,
+        GenOpt.lazy_sum(d[i+j] * x[i]^2 for i in 1:2, j in 1:1),
+    )
+    @test_throws ErrorException _optimize!(model)
+    return
+end
+
 end  # module
 
 TestExaModels.runtests()
