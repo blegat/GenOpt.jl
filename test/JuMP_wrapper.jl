@@ -127,6 +127,19 @@ function test_extension_variable_arrays()
     return
 end
 
+function test_variable_not_owned()
+    model = Model()
+    @variable(model, x[1:3])
+    other = Model()
+    @test_throws VariableNotOwned @constraint(
+        other,
+        [i in 1:3],
+        x[i] >= 0,
+        container = ParametrizedArray
+    )
+    return
+end
+
 function test_container()
     model = Model()
     @variable(model, x)
@@ -162,6 +175,26 @@ function test_container()
     # TODO There are still `IteratorIndex`, JuMP function does not
     # convert them back
     @test_broken JuMP.isequal_canonical(con_expr, expr)
+end
+
+function test_generator_variable_ownership()
+    model, other = Model(), Model()
+    @variable(model, x[1:2])
+    @variable(other, foreign[1:2])
+    i = GenOpt.iterator([1, 2])
+    @test JuMP.check_belongs_to_model(x[i], model) === nothing
+    @test JuMP.check_belongs_to_model(GenOpt.LazySum(x[i]), model) === nothing
+    for expr in (foreign[i], x[i] + foreign[i], (x[i] + 1.0) * foreign[i])
+        @test_throws VariableNotOwned JuMP.check_belongs_to_model(expr, model)
+    end
+    @test_throws VariableNotOwned JuMP.check_belongs_to_model(
+        GenOpt.LazySum(foreign[i]),
+        model,
+    )
+    constraint =
+        JuMP.build_constraint(error, x[i] + foreign[i], MOI.LessThan(0.0))
+    @test_throws VariableNotOwned JuMP.check_belongs_to_model(constraint, model)
+    return
 end
 
 function test_index_iterators_scalar_arguments()

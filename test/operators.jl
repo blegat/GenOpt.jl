@@ -222,6 +222,18 @@ function test_data_array_multiple_iterator_indices()
     for a in 0:1, b in 0:2
         @test GenOpt._expand(func, [(a,), (b,)]) == data[3*a+b+1]
     end
+    # Converted with the model, see `JuMP.moi_function(::GenericModel, ...)`
+    model = JuMP.Model()
+    JuMP.@variable(model, x)
+    con_ref = JuMP.@constraint(
+        model,
+        [a in 0:1, b in 0:2],
+        x >= data[3*a+b+1],
+        container = GenOpt.ParametrizedArray
+    )
+    func = MOI.get(model, MOI.ConstraintFunction(), con_ref.constraint)
+    @test func isa GenOpt.FunctionGenerator
+    @test MOI.output_dimension(func) == 6
     return
 end
 
