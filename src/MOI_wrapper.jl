@@ -176,18 +176,53 @@ function MOI.Utilities.canonicalize!(
     return s
 end
 
+# `MOI.Utilities.IndexMap` is an `AbstractDict` so `map_indices` with an
+# `IndexMap` is redirected by MOI to the methods below.
+
 function MOI.Utilities.map_indices(
-    ::MOI.Utilities.IndexMap,
-    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
-)
-    # TODO check it's identity
-    return func
+    index_map::F,
+    array::ContiguousArrayOfVariables,
+) where {F<:Function}
+    offset = index_map(MOI.VariableIndex(array.offset + 1)).value - 1
+    # The variables have to remain contiguous in the same order.
+    for i in 1:length(array)
+        if index_map(MOI.VariableIndex(array.offset + i)).value != offset + i
+            error(
+                "Cannot map the indices of a `ContiguousArrayOfVariables` as " *
+                "the variables are no longer contiguous after the mapping.",
+            )
+        end
+    end
+    return ContiguousArrayOfVariables(offset, array.size)
 end
 
 function MOI.Utilities.map_indices(
-    ::Function,
-    func::Union{FunctionGenerator,SumGenerator,FilteredSumGenerator},
-)
-    # TODO check it's identity
-    return func
+    index_map::F,
+    func::FunctionGenerator{G},
+) where {F<:Function,G}
+    return FunctionGenerator{G}(
+        MOI.Utilities.map_indices(index_map, func.func),
+        func.iterators,
+    )
+end
+
+function MOI.Utilities.map_indices(
+    index_map::F,
+    func::SumGenerator{G},
+) where {F<:Function,G}
+    return SumGenerator{G}(
+        MOI.Utilities.map_indices(index_map, func.func),
+        func.iterators,
+    )
+end
+
+function MOI.Utilities.map_indices(
+    index_map::F,
+    func::FilteredSumGenerator{G},
+) where {F<:Function,G}
+    return FilteredSumGenerator{G}(
+        MOI.Utilities.map_indices(index_map, func.func),
+        func.iterators,
+        func.filter,
+    )
 end

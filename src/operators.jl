@@ -496,6 +496,8 @@ JuMP.moi_function(array::_DataArray) = array
 JuMP.check_belongs_to_model(::_DataArray, ::JuMP.AbstractModel) = nothing
 JuMP.moi_function(::JuMP.GenericModel, array::_DataArray) = array
 JuMP.jump_function(_, array::_DataArray) = array
+# The data does not contain any variable or constraint index
+MOI.Utilities.map_indices(::Function, array::_DataArray) = array
 
 # A lookup involving several domains cannot be appended to one iterator's
 # values. Keep it symbolic until the Cartesian product is expanded instead.
