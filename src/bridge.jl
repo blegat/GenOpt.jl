@@ -132,6 +132,25 @@ end
 _expand(idx::IteratorIndex, values) = values[idx.value]
 _expand(x, _) = x  # constants, MOI.VariableIndex, etc.
 
+# A `FilteredSumGenerator` nested in the template (e.g. produced by
+# [`regroup`](@ref)) expands to the sum of its own template expanded at every
+# inner row whose filtered entry matches the outer one.
+function _expand(gen::FilteredSumGenerator, values)
+    a, b = gen.filter.args
+    inner, outer = a.iterators === gen.iterators ? (a, b) : (b, a)
+    target = values[outer.index.value][outer.value_index]
+    args = Any[]
+    for row in gen.iterators[inner.index.value].values
+        if row[inner.value_index] == target
+            push!(args, _expand(gen.func, [row]))
+        end
+    end
+    if isempty(args)
+        return 0.0
+    end
+    return MOI.ScalarNonlinearFunction(:+, args)
+end
+
 _is_numeric(::Number) = true
 _is_numeric(_) = false
 
