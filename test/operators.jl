@@ -142,9 +142,52 @@ function test_filtered_sum_moi_utilities()
     @test copied.filter === generator.filter
     @test MOI.Utilities.is_canonical(copied)
     @test MOI.Utilities.canonicalize!(copied) === copied
-    @test MOI.Utilities.map_indices(MOI.Utilities.IndexMap(), copied) === copied
-    @test MOI.Utilities.map_indices(identity, copied) === copied
+    mapped = MOI.Utilities.map_indices(identity, copied)
+    @test mapped isa GenOpt.FilteredSumGenerator
+    @test mapped.iterators === copied.iterators
+    @test mapped.filter === copied.filter
+    @test _arrays(mapped.func) == _arrays(copied.func)
+    # Shift the variables as `MOI.copy_to` does when, e.g., parameters are
+    # added first in the destination
+    index_map = MOI.Utilities.IndexMap()
+    for xi in x
+        vi = JuMP.index(xi)
+        index_map[vi] = MOI.VariableIndex(vi.value + 2)
+    end
+    mapped = MOI.Utilities.map_indices(index_map, copied)
+    @test _arrays(mapped.func) == [GenOpt.ContiguousArrayOfVariables(2, (3,))]
+    # The variables are no longer contiguous
+    index_map[JuMP.index(x[2])] = MOI.VariableIndex(10)
+    @test_throws ErrorException MOI.Utilities.map_indices(index_map, copied)
     return
+end
+
+function test_deferred_getindex_map_indices()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:2])
+    d = [1.0, 2.0, 3.0]
+    # `d[i + j]` involves two iterators so `d` is kept in the function
+    generator =
+        JuMP.moi_function(GenOpt.lazy_sum(d[i+j] * x[i] for i in 1:2, j in 1:1))
+    data = _data_arrays(generator.func)
+    @test length(data) == 1
+    @test only(data).data === d
+    mapped = MOI.Utilities.map_indices(identity, generator)
+    @test _data_arrays(mapped.func) == data
+    @test only(_data_arrays(mapped.func)) === only(data)
+    return
+end
+
+_data_arrays(::Any) = GenOpt._DataArray[]
+_data_arrays(a::GenOpt._DataArray) = [a]
+function _data_arrays(f::MOI.ScalarNonlinearFunction)
+    return reduce(vcat, _data_arrays.(f.args); init = _data_arrays(nothing))
+end
+
+_arrays(::Any) = GenOpt.ContiguousArrayOfVariables[]
+_arrays(a::GenOpt.ContiguousArrayOfVariables) = [a]
+function _arrays(f::MOI.ScalarNonlinearFunction)
+    return reduce(vcat, _arrays.(f.args); init = _arrays(nothing))
 end
 
 function test_jump_function_type()

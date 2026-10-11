@@ -73,7 +73,9 @@ function ArrayOfVariables(
 end
 
 Base.size(array::ArrayOfVariables) = array.size
-function Base.getindex(A::ArrayOfVariables{T,N,V}, I...) where {T,N,V}
+# Restricting to integers lets `Base` handle other indices, e.g.,
+# `CartesianIndex` which JuMP uses when iterating in `check_belongs_to_model`
+function Base.getindex(A::ArrayOfVariables{T,N,V}, I::Integer...) where {T,N,V}
     index =
         A.offset + Base._to_linear_index(Base.CartesianIndices(A.size), I...)
     return V(A.model, MOI.VariableIndex(index))

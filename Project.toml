@@ -8,7 +8,14 @@ JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
 MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
 MutableArithmetics = "d8a4904e-b15c-11e9-3269-09a3773c0cb0"
 
+[weakdeps]
+ExaModels = "1037b233-b668-4ce9-9b63-f9f681f55dd2"
+
+[extensions]
+GenOptExaModelsExt = ["ExaModels", "MathOptInterface"]
+
 [compat]
+ExaModels = "0.12.1"
 JuMP = "1.29"
 MathOptInterface = "1.51"
 MutableArithmetics = "1.8.0"
