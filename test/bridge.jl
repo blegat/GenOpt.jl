@@ -201,6 +201,10 @@ function test_expand_constant()
     func = MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1.0])
     result = GenOpt._expand(func, [5.0])
     @test result == 6.0
+    for (head, expected) in ((:+, 0.0), (:*, 1.0))
+        empty = MOI.ScalarNonlinearFunction(head, Any[])
+        @test GenOpt._expand(empty, Any[]) === expected
+    end
 end
 
 function test_expand_variable()
@@ -210,6 +214,610 @@ function test_expand_variable()
     func = MOI.ScalarNonlinearFunction(:getindex, Any[x, index_expr])
     result = GenOpt._expand(func, [1])
     @test result == MOI.VariableIndex(2)
+end
+
+function test_build_nested_quadratic()
+    for T in (Float32, Float64)
+        model = MOI.Utilities.Model{T}()
+        variables = MOI.add_variables(model, 3)
+        block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+        indexed = MOI.ScalarNonlinearFunction(
+            :getindex,
+            Any[block, GenOpt.IteratorIndex(1)],
+        )
+        template = MOI.ScalarNonlinearFunction(
+            :-,
+            Any[
+                MOI.ScalarNonlinearFunction(
+                    :*,
+                    Any[
+                        MOI.ScalarNonlinearFunction(:+, Any[indexed, 1]),
+                        MOI.ScalarNonlinearFunction(:-, Any[indexed, 2]),
+                    ],
+                ),
+                9,
+            ],
+        )
+        F, S = MOI.ScalarQuadraticFunction{T}, MOI.LessThan{T}
+        expanded = GenOpt._build_function(F, template, Any[2])
+        @test expanded isa F
+        MOI.Utilities.canonicalize!(expanded)
+        @test expanded.quadratic_terms ==
+              [MOI.ScalarQuadraticTerm(T(2), variables[2], variables[2])]
+        @test expanded.affine_terms ==
+              [MOI.ScalarAffineTerm(-one(T), variables[2])]
+        @test expanded.constant === T(-11)
+        func = GenOpt.FunctionGenerator{F}(
+            template,
+            GenOpt.Iterator[GenOpt.Iterator([1, 2, 3])],
+        )
+        bridge = MOI.Bridges.Constraint.bridge_constraint(
+            GenOpt.FunctionGeneratorBridge{T,F,S},
+            model,
+            func,
+            MOI.Nonpositives(3),
+        )
+        @test length(bridge.constraints) == 3
+        for (index, variable) in zip(bridge.constraints, variables)
+            expanded = MOI.get(model, MOI.ConstraintFunction(), index)
+            MOI.Utilities.canonicalize!(expanded)
+            @test expanded.quadratic_terms ==
+                  [MOI.ScalarQuadraticTerm(T(2), variable, variable)]
+            @test expanded.affine_terms ==
+                  [MOI.ScalarAffineTerm(-one(T), variable)]
+            @test expanded.constant === zero(T)
+            @test MOI.get(model, MOI.ConstraintSet(), index) ==
+                  MOI.LessThan(T(11))
+        end
+    end
+    return
+end
+
+function _test_build_function_and_bridge(
+    ::Type{T},
+    template,
+    values,
+    expected::Vector{F},
+) where {T,F}
+    for (value, func) in zip(values, expected)
+        expanded = GenOpt._build_function(F, template, Any[value])
+        @test expanded isa F
+        @test expanded ≈ func
+    end
+    model = MOI.Utilities.Model{T}()
+    reference = MOI.Utilities.Model{T}()
+    MOI.add_variables(model, 3)
+    MOI.add_variables(reference, 3)
+    generator = GenOpt.FunctionGenerator{F}(
+        template,
+        GenOpt.Iterator[GenOpt.Iterator(values)],
+    )
+    bridge = MOI.Bridges.Constraint.bridge_constraint(
+        GenOpt.FunctionGeneratorBridge{T,F,MOI.LessThan{T}},
+        model,
+        generator,
+        MOI.Nonpositives(length(values)),
+    )
+    @test length(bridge.constraints) == length(expected)
+    for (index, func) in zip(bridge.constraints, expected)
+        reference_index = MOI.Utilities.normalize_and_add_constraint(
+            reference,
+            func,
+            MOI.LessThan(zero(T)),
+        )
+        @test MOI.get(model, MOI.ConstraintFunction(), index) ≈
+              MOI.get(reference, MOI.ConstraintFunction(), reference_index)
+        @test MOI.get(model, MOI.ConstraintSet(), index) ==
+              MOI.get(reference, MOI.ConstraintSet(), reference_index)
+    end
+    return
+end
+
+function test_build_variable_function()
+    template = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            GenOpt.ContiguousArrayOfVariables(0, (3,)),
+            GenOpt.IteratorIndex(1),
+        ],
+    )
+    for T in (Float32, Float64)
+        _test_build_function_and_bridge(
+            T,
+            template,
+            [1, 2, 3],
+            MOI.VariableIndex.(1:3),
+        )
+    end
+    return
+end
+
+function test_build_computed_constants()
+    index = GenOpt.IteratorIndex(1)
+    x = MOI.VariableIndex(1)
+    for T in (Float32, Float64)
+        coefficient = MOI.ScalarNonlinearFunction(:+, Any[index, one(T)])
+        product = MOI.ScalarNonlinearFunction(:*, Any[coefficient, x])
+        _test_build_function_and_bridge(
+            T,
+            product,
+            [1, 2],
+            [
+                MOI.ScalarAffineFunction(
+                    [MOI.ScalarAffineTerm(T(i + 1), x)],
+                    zero(T),
+                ) for i in 1:2
+            ],
+        )
+        sine = MOI.ScalarNonlinearFunction(:sin, Any[index])
+        sum = MOI.ScalarNonlinearFunction(:+, Any[x, sine])
+        _test_build_function_and_bridge(
+            T,
+            sum,
+            [1, 2],
+            [
+                MOI.ScalarAffineFunction(
+                    [MOI.ScalarAffineTerm(one(T), x)],
+                    T(sin(i)),
+                ) for i in 1:2
+            ],
+        )
+    end
+    return
+end
+
+function test_build_computed_constants_precision()
+    index = GenOpt.IteratorIndex(1)
+    x = MOI.VariableIndex(1)
+    for T in (Float32, Float64, BigFloat)
+        value = nextfloat(one(T))
+        for (head, args, expected) in
+            ((:exp, Any[index], exp(value)), (:-, Any[index, 1], value - 1))
+            coefficient = MOI.ScalarNonlinearFunction(head, args)
+            folded = GenOpt._expand(coefficient, Any[value])
+            @test folded isa T
+            @test folded == expected
+            product = MOI.ScalarNonlinearFunction(:*, Any[coefficient, x])
+            for F in
+                (MOI.ScalarAffineFunction{T}, MOI.ScalarQuadraticFunction{T})
+                expanded = GenOpt._build_function(F, product, Any[value])
+                # Approximate equality could miss the Float64 round-trip.
+                terms =
+                    expanded isa MOI.ScalarAffineFunction ? expanded.terms :
+                    expanded.affine_terms
+                @test only(terms).coefficient == expected
+                reference = convert(
+                    F,
+                    MOI.ScalarAffineFunction(
+                        [MOI.ScalarAffineTerm(expected, x)],
+                        zero(T),
+                    ),
+                )
+                _test_build_function_and_bridge(
+                    T,
+                    product,
+                    [value],
+                    [reference],
+                )
+            end
+        end
+    end
+    return
+end
+
+function test_build_nary_quadratic_product()
+    x = MOI.VariableIndex(1)
+    for T in (Float32, Float64)
+        # MOI's nonlinear representation of a quadratic term has three args.
+        for args in (Any[T(2), x, x], Any[x, T(2), x], Any[x, x, T(2)])
+            _test_build_function_and_bridge(
+                T,
+                MOI.ScalarNonlinearFunction(:*, args),
+                [1],
+                [
+                    MOI.ScalarQuadraticFunction(
+                        [MOI.ScalarQuadraticTerm(T(4), x, x)],
+                        MOI.ScalarAffineTerm{T}[],
+                        zero(T),
+                    ),
+                ],
+            )
+        end
+    end
+    return
+end
+
+function test_build_mixed_coefficient_types()
+    x = MOI.VariableIndex(1)
+    index = GenOpt.IteratorIndex(1)
+    for T in (Float32, Float64), coefficient in (Int32(2), 2.0f0, 1 // 2)
+        for (arg, values) in (
+            (coefficient, [1]),
+            (index, [coefficient]),
+            (
+                MOI.ScalarNonlinearFunction(
+                    :getindex,
+                    Any[[coefficient], index],
+                ),
+                [1],
+            ),
+        )
+            expected = MOI.ScalarAffineFunction(
+                [MOI.ScalarAffineTerm(T(coefficient), x)],
+                zero(T),
+            )
+            for F in
+                (MOI.ScalarAffineFunction{T}, MOI.ScalarQuadraticFunction{T})
+                _test_build_function_and_bridge(
+                    T,
+                    MOI.ScalarNonlinearFunction(:*, Any[arg, x]),
+                    values,
+                    [convert(F, expected)],
+                )
+            end
+        end
+    end
+    return
+end
+
+function test_build_general_array_indices()
+    index = GenOpt.IteratorIndex(1)
+    x = MOI.VariableIndex(1)
+    for T in (Float32, Float64)
+        for collection in (
+            T[2, 3, 4],
+            T[2 3 4],
+            GenOpt.ContiguousArrayOfVariables(0, (3,)),
+            GenOpt.ContiguousArrayOfVariables(0, (1, 3)),
+        )
+            cartesian =
+                ndims(collection) == 1 ? CartesianIndex(2) :
+                CartesianIndex(1, 2)
+            for (arg, values, resolved) in (
+                (MOI.ScalarNonlinearFunction(:abs, Any[index]), [-1], 1),
+                (MOI.ScalarNonlinearFunction(:+, Any[index, 1, 1]), [1], 3),
+                (index, [2], 2),
+                (cartesian, [1], 2),
+                (index, [cartesian], 2),
+                (
+                    MOI.ScalarNonlinearFunction(
+                        :getindex,
+                        Any[Dict(:a => 2), :a],
+                    ),
+                    [1],
+                    2,
+                ),
+                (
+                    MOI.ScalarNonlinearFunction(
+                        :getindex,
+                        Any[[2], CartesianIndex(1)],
+                    ),
+                    [1],
+                    2,
+                ),
+                (
+                    MOI.ScalarNonlinearFunction(:getindex, Any[index, 1]),
+                    [(first(CartesianIndices(collection)),)],
+                    1,
+                ),
+            )
+                lookup =
+                    MOI.ScalarNonlinearFunction(:getindex, Any[collection, arg])
+                value = collection[resolved]
+                for F in (
+                    MOI.ScalarAffineFunction{T},
+                    MOI.ScalarQuadraticFunction{T},
+                )
+                    _test_build_function_and_bridge(
+                        T,
+                        lookup,
+                        values,
+                        [convert(F, value)],
+                    )
+                    if value isa Number
+                        _test_build_function_and_bridge(
+                            T,
+                            MOI.ScalarNonlinearFunction(:*, Any[lookup, x]),
+                            values,
+                            [
+                                convert(
+                                    F,
+                                    MOI.ScalarAffineFunction(
+                                        [MOI.ScalarAffineTerm(value, x)],
+                                        zero(T),
+                                    ),
+                                ),
+                            ],
+                        )
+                    end
+                end
+            end
+        end
+        invalid = MOI.ScalarNonlinearFunction(:getindex, Any[T[2], index, 2])
+        for F in (MOI.ScalarAffineFunction{T}, MOI.ScalarQuadraticFunction{T})
+            @test_throws BoundsError GenOpt._build_function(F, invalid, Any[1])
+        end
+    end
+    return
+end
+
+function test_build_dictionary_symbolic_key()
+    x, y = MOI.VariableIndex(1), MOI.VariableIndex(2)
+    dict = Dict(:a => x, :b => y)
+    for T in (Float32, Float64),
+        F in (MOI.ScalarAffineFunction{T}, MOI.ScalarQuadraticFunction{T})
+
+        for (arg, values, expected) in
+            ((:a, [1], [x]), (GenOpt.IteratorIndex(1), [:a, :b], [x, y]))
+            _test_build_function_and_bridge(
+                T,
+                MOI.ScalarNonlinearFunction(:getindex, Any[dict, arg]),
+                values,
+                [convert(F, variable) for variable in expected],
+            )
+        end
+    end
+    return
+end
+
+function test_build_embedded_polynomial()
+    x, y = MOI.VariableIndex(1), MOI.VariableIndex(2)
+    for T in (Float32, Float64)
+        affine =
+            MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(T(2), x)], one(T))
+        affine_copy = copy(affine)
+        template = MOI.ScalarNonlinearFunction(:+, Any[y, affine])
+        expected = MOI.ScalarAffineFunction(
+            [MOI.ScalarAffineTerm(T(2), x), MOI.ScalarAffineTerm(one(T), y)],
+            one(T),
+        )
+        _test_build_function_and_bridge(T, template, [1], [expected])
+        _test_build_function_and_bridge(
+            T,
+            template,
+            [1],
+            [convert(MOI.ScalarQuadraticFunction{T}, expected)],
+        )
+        quadratic = MOI.ScalarQuadraticFunction(
+            [MOI.ScalarQuadraticTerm(T(2), x, x)],
+            [MOI.ScalarAffineTerm(T(3), x)],
+            T(4),
+        )
+        quadratic_copy = copy(quadratic)
+        _test_build_function_and_bridge(
+            T,
+            MOI.ScalarNonlinearFunction(:+, Any[y, quadratic]),
+            [1],
+            [
+                MOI.ScalarQuadraticFunction(
+                    [MOI.ScalarQuadraticTerm(T(2), x, x)],
+                    [
+                        MOI.ScalarAffineTerm(T(3), x),
+                        MOI.ScalarAffineTerm(one(T), y),
+                    ],
+                    T(4),
+                ),
+            ],
+        )
+        @test affine ≈ affine_copy
+        @test quadratic ≈ quadratic_copy
+    end
+    return
+end
+
+function test_build_constant_nonlinear_function()
+    template = MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1])
+    for T in (Float32, Float64)
+        _test_build_function_and_bridge(
+            T,
+            template,
+            [1, 2],
+            [MOI.ScalarNonlinearFunction(:+, Any[T(i + 1)]) for i in 1:2],
+        )
+    end
+    return
+end
+
+function test_build_rejects_nonpolynomial_functions()
+    x = MOI.VariableIndex(1)
+    for T in (Float32, Float64)
+        for (F, template) in (
+            (
+                MOI.ScalarAffineFunction{T},
+                MOI.ScalarNonlinearFunction(:*, Any[x, x]),
+            ),
+            (
+                MOI.ScalarQuadraticFunction{T},
+                MOI.ScalarNonlinearFunction(:*, Any[x, x, x]),
+            ),
+            (
+                MOI.ScalarQuadraticFunction{T},
+                MOI.ScalarNonlinearFunction(:sin, Any[x]),
+            ),
+        )
+            @test_throws InexactError GenOpt._build_function(F, template, Any[])
+        end
+    end
+    return
+end
+
+function test_affine_jump_wrapped_iterator_index()
+    # The JuMP wrapper's `prepare(it::IteratorValues)` produces SNFs of the form
+    # `SNF(:getindex, [IteratorIndex(k), value_index])` because iterator values
+    # are stored as tuples (so the value is `values[k][value_index]`). A
+    # constraint like `x[k+1] + x[k] == c` produces the index expression
+    # `SNF(:+, [SNF(:getindex, [IteratorIndex(1), 1]), 1])` inside a `:getindex`
+    # on `x`. Exercise that path so `_eval_index` resolves it correctly.
+    x_block = GenOpt.ContiguousArrayOfVariables(0, (5,))
+    k_idx =
+        MOI.ScalarNonlinearFunction(:getindex, Any[GenOpt.IteratorIndex(1), 1])
+    k_plus_1 = MOI.ScalarNonlinearFunction(:+, Any[k_idx, 1])
+    template = MOI.ScalarNonlinearFunction(
+        :+,
+        Any[
+            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, k_idx]),
+            MOI.ScalarNonlinearFunction(:getindex, Any[x_block, k_plus_1]),
+        ],
+    )
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    values = Any[(2,)]
+    GenOpt._expand_affine!(out, template, values, 1.0)
+    @test out.constant == 0.0
+    @test length(out.terms) == 2
+    @test out.terms[1].coefficient == 1.0
+    @test out.terms[1].variable == MOI.VariableIndex(2)
+    @test out.terms[2].coefficient == 1.0
+    @test out.terms[2].variable == MOI.VariableIndex(3)
+end
+
+function test_eval_index_getindex_iterator_index_alloc()
+    # JuMP-wrapped iterator-reference pattern (`SNF(:getindex, [IteratorIndex(k), j])`).
+    # `_eval_index` is intentionally allowed small allocations — see the comment
+    # at its definition: it is called only off the `:getindex` resolution path,
+    # not the affine hot path, so the recursive `Float64` return type isn't
+    # forced to be allocation-free. The bound below is the headroom around the
+    # one box per `Vector{Any}` read (tuple value + arg slot). Tighten if the
+    # implementation later avoids those.
+    expr =
+        MOI.ScalarNonlinearFunction(:getindex, Any[GenOpt.IteratorIndex(1), 1])
+    values = Any[(7,)]
+    @test GenOpt._eval_index(expr, values) === 7.0
+    @test GenOpt._to_int(expr, values) === 7
+    # Warm up before measuring so first-call compilation isn't counted.
+    GenOpt._eval_index(expr, values)
+    GenOpt._to_int(expr, values)
+    @test @allocated(GenOpt._eval_index(expr, values)) <= 64
+    @test @allocated(GenOpt._to_int(expr, values)) <= 64
+end
+
+function test_eval_index_getindex_data_collection()
+    # Covers the `coll isa IteratorIndex ? ... : coll` else branch — used when
+    # an inner index expression itself dereferences a constant data array,
+    # e.g. `vpll_d[some_data[k], s]`.
+    data = [10, 20, 30, 40]
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            data,
+            MOI.ScalarNonlinearFunction(:+, Any[GenOpt.IteratorIndex(1), 1]),
+        ],
+    )
+    @test GenOpt._eval_index(expr, [1]) == 20.0
+    @test GenOpt._to_int(expr, [2]) == 30
+end
+
+function test_eval_index_getindex_n3()
+    # Covers the n == 3 (2-D `getindex`) branch of `_eval_index`.
+    mat = [10 20; 30 40]
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[mat, GenOpt.IteratorIndex(1), GenOpt.IteratorIndex(2)],
+    )
+    @test GenOpt._eval_index(expr, Any[2, 1]) == 30.0
+end
+
+function test_eval_index_getindex_nlarge()
+    # Covers the ntuple fallback branch (n > 3). 3-rd order tensor — fallback
+    # path that pays one box per call, so we don't check allocations here.
+    arr = reshape(collect(1:8), (2, 2, 2))
+    expr = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            arr,
+            GenOpt.IteratorIndex(1),
+            GenOpt.IteratorIndex(2),
+            GenOpt.IteratorIndex(3),
+        ],
+    )
+    @test GenOpt._eval_index(expr, Any[2, 2, 2]) == 8.0
+end
+
+function test_eval_index_unsupported_head_error()
+    # Covers the unsupported-SNF-head error branch. The error message must
+    # NOT call `string(::SNF)` on an SNF containing `IteratorIndex` — that
+    # would trigger an unrelated MOI `_to_string` MethodError and mask the
+    # real "Cannot resolve" message.
+    expr = MOI.ScalarNonlinearFunction(:sin, Any[GenOpt.IteratorIndex(1)])
+    err = try
+        GenOpt._eval_index(expr, Any[(2,)])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    msg = sprint(showerror, err)
+    @test occursin("Cannot resolve `getindex` index", msg)
+    @test occursin(":sin", msg)
+end
+
+function test_eval_index_unsupported_type_error()
+    # Covers the top-level unsupported-type fallback (anything that is not
+    # Integer / AbstractFloat / IteratorIndex / SNF).
+    err = try
+        GenOpt._eval_index(:not_a_number, Any[])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("Symbol", sprint(showerror, err))
+end
+
+function test_to_int_unsupported_type_error()
+    # Same as above for `_to_int`'s top-level fallback.
+    err = try
+        GenOpt._to_int(:not_a_number, Any[])
+    catch e
+        e
+    end
+    @test err isa ErrorException
+    @test occursin("Symbol", sprint(showerror, err))
+end
+
+function test_to_int_abstract_float()
+    # Covers the `_to_int` AbstractFloat branch: a Float index is truncated.
+    @test GenOpt._to_int(2.0, Any[]) === 2
+end
+
+function test_eval_index_abstract_float()
+    # Covers the `_eval_index` AbstractFloat branch.
+    @test GenOpt._eval_index(2.5, Any[]) === 2.5
+end
+
+function test_eval_index_unary_minus()
+    # Covers `:- && n == 1` in `_eval_index`.
+    expr = MOI.ScalarNonlinearFunction(:-, Any[GenOpt.IteratorIndex(1)])
+    @test GenOpt._eval_index(expr, [3]) === -3.0
+end
+
+function test_eval_index_division()
+    # Covers `:/ && n == 2` in `_eval_index`.
+    expr = MOI.ScalarNonlinearFunction(:/, Any[GenOpt.IteratorIndex(1), 2])
+    @test GenOpt._eval_index(expr, [7]) === 3.5
+end
+
+function test_eval_index_pow()
+    # Covers `:^ && n == 2` in `_eval_index`.
+    expr = MOI.ScalarNonlinearFunction(:^, Any[GenOpt.IteratorIndex(1), 3])
+    @test GenOpt._eval_index(expr, [2]) === 8.0
+end
+
+function test_resolve_getindex_fallback()
+    # Covers `_resolve_getindex` (and the `else` branch in
+    # `_expand_getindex_affine!` that calls it). Triggered when the collection
+    # type is not matched by any of the specialized branches — e.g. a
+    # `Vector{Any}` of variables that is neither `ContiguousArrayOfVariables`
+    # nor `AbstractArray{<:Number}`.
+    x = [MOI.VariableIndex(1), MOI.VariableIndex(2), MOI.VariableIndex(3)]
+    coll = convert(Vector{Any}, x)
+    template = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[coll, GenOpt.IteratorIndex(1)],
+    )
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    GenOpt._expand_affine!(out, template, Any[2], 1.0)
+    @test out.constant == 0.0
+    @test length(out.terms) == 1
+    @test out.terms[1].coefficient == 1.0
+    @test out.terms[1].variable == MOI.VariableIndex(2)
 end
 
 function test_expand_with_variable_in_expr()
@@ -443,6 +1051,102 @@ function test_constraint_indexed_over_dict_keys()
     @test JuMP.value(x[1, 1]) ≈ 3.0
     @test JuMP.value(x[2, 1]) ≈ 5.0
     @test JuMP.value(x[3, 1]) ≈ 4.0
+end
+
+function test_try_const_nested_affine_allocation_free()
+    function _loop(::Type{T}, expr, values, n) where {T}
+        result = nothing
+        for _ in 1:n
+            result = GenOpt._try_const(T, expr, values)
+        end
+        return result
+    end
+    indexed = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            GenOpt.ContiguousArrayOfVariables(0, (3,)),
+            GenOpt.IteratorIndex(1),
+        ],
+    )
+    values = Any[2]
+    for T in (Float32, Float64)
+        template = MOI.ScalarNonlinearFunction(:+, Any[indexed, one(T)])
+        # Quadratic products inspect affine factors for constant coefficients.
+        # Reject variable-containing factors without allocating expanded trees.
+        @test _loop(T, template, values, 1) === nothing
+        if VERSION >= v"1.12"
+            @test (@allocated _loop(T, template, values, 1000)) == 0
+        end
+    end
+    return
+end
+
+function test_expand_affine_allocation_free()
+    # Template: 2 * x[1] + price[i] * x[i] - 1 for i in 1..3
+    # Exercises all the relevant branches: `+`, `-`, `*` (literal-on-left,
+    # data-lookup-on-left), `:getindex` on both `ContiguousArrayOfVariables`
+    # and `Vector{Float64}`.
+    x_block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+    price = [2.0, 3.0, 5.0]
+    idx = GenOpt.IteratorIndex(1)
+    template = MOI.ScalarNonlinearFunction(
+        :-,
+        Any[
+            MOI.ScalarNonlinearFunction(
+                :+,
+                Any[
+                    MOI.ScalarNonlinearFunction(
+                        :*,
+                        Any[
+                            2.0,
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, 1],
+                            ),
+                        ],
+                    ),
+                    MOI.ScalarNonlinearFunction(
+                        :*,
+                        Any[
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[price, idx],
+                            ),
+                            MOI.ScalarNonlinearFunction(
+                                :getindex,
+                                Any[x_block, idx],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            1.0,
+        ],
+    )
+    values = Vector{Any}(undef, 1)
+    values[1] = 2  # iterator value
+    out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{Float64}[], 0.0)
+    sizehint!(out.terms, 2) # final term count for this template
+    # Warm up to force compilation.
+    GenOpt._expand_affine!(out, template, values, 1.0)
+    @test out.constant == -1.0
+    @test length(out.terms) == 2
+    @test out.terms[1].coefficient == 2.0
+    @test out.terms[1].variable.value == 1
+    @test out.terms[2].coefficient == 3.0
+    @test out.terms[2].variable.value == 2
+    # With the buffer pre-sized via `sizehint!` and `N ∈ {0, 1, 2}` enumerated
+    # in `_expand_getindex_affine!`, the inner expansion is fully allocation-
+    # free. Amortize over a loop to filter out one-shot @allocated overhead.
+    function _loop!(out, expr, values, n)
+        for _ in 1:n
+            empty!(out.terms)
+            out.constant = 0.0
+            GenOpt._expand_affine!(out, expr, values, 1.0)
+        end
+    end
+    _loop!(out, template, values, 1) # warm
+    @test (@allocated _loop!(out, template, values, 1000)) == 0
 end
 
 end  # module
