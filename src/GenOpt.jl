@@ -8,6 +8,7 @@ module GenOpt
 import MutableArithmetics as MA
 
 include("MOI_wrapper.jl")
+include("MOF.jl")
 include("polynomial.jl")
 include("Bridges/Bridges.jl")
 include("JuMP_wrapper.jl")
