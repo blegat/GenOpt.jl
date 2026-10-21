@@ -4,8 +4,9 @@
 [![codecov](https://codecov.io/gh/blegat/GenOpt.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/blegat/GenOpt.jl)
 
 Pack groups of similar constraints of sum of similar terms into lightweight generators.
-This representation can then be used by [ExaModels](https://github.com/exanauts/ExaModels.jl)
-to accelerate the Automatic Differentiation on GPU.
+The ExaModels extension passes these generators to
+[ExaModels](https://github.com/exanauts/ExaModels.jl) to accelerate automatic
+differentiation on CPU or GPU.
 See the [presentation at JuMP-dev 2025](https://jump.dev/meetings/jumpdev2025/).
 
 ## License
@@ -32,7 +33,7 @@ using GenOpt
     container = ParametrizedArray,
 )
 ```
-To a grouped sum, use `lazy_sum` as follows:
+To create a grouped sum, use `lazy_sum` as follows:
 ```julia
 @objective(
     model,
@@ -40,8 +41,46 @@ To a grouped sum, use `lazy_sum` as follows:
     lazy_sum(0.5 * R[j] * (u[i, j]^2) for i in 1:N, j in 1:p),
 )
 ```
-To solve it on GPU with ExaModels, use
+## Solve with ExaModels
+
+Install ExaModels and a solver such as MadNLP:
+
 ```julia
-set_optimizer(model, () -> GenOpt.ExaOptimizer(madnlp, CUDABackend()))
+import Pkg
+Pkg.add(["ExaModels", "MadNLP"])
+```
+
+Loading both GenOpt and ExaModels automatically enables the extension. Use
+`ExaModels.Optimizer` to solve a JuMP model while preserving its grouped
+constraints and sums:
+
+```julia
+using JuMP, GenOpt
+import ExaModels
+import MadNLP
+
+model = Model(() -> ExaModels.Optimizer(MadNLP.madnlp))
+@variable(model, x[1:4])
+@constraint(model, [i in 1:4], x[i] >= 2, container = ParametrizedArray)
+@constraint(model, [i in 1:4], x[i] <= 3, container = ParametrizedArray)
+@objective(model, Min, lazy_sum((x[i] - i)^2 for i in 1:4))
+optimize!(model)
+
+value.(x) # approximately [2, 2, 3, 3]
+objective_value(model) # approximately 2
+```
+
+For an NVIDIA GPU, install and load CUDA, then pass its backend to the
+optimizer:
+
+```julia
+import Pkg
+Pkg.add("CUDA")
+using CUDA
+
+set_optimizer(model, () -> ExaModels.Optimizer(MadNLP.madnlp, CUDABackend()))
 optimize!(model)
 ```
+
+See the [quadrotor](examples/quadrotor) and [optimal power flow](examples/opf)
+examples for larger models.

@@ -127,6 +127,19 @@ function test_extension_variable_arrays()
     return
 end
 
+function test_variable_not_owned()
+    model = Model()
+    @variable(model, x[1:3])
+    other = Model()
+    @test_throws VariableNotOwned @constraint(
+        other,
+        [i in 1:3],
+        x[i] >= 0,
+        container = ParametrizedArray
+    )
+    return
+end
+
 function test_container()
     model = Model()
     @variable(model, x)
@@ -162,6 +175,60 @@ function test_container()
     # TODO There are still `IteratorIndex`, JuMP function does not
     # convert them back
     @test_broken JuMP.isequal_canonical(con_expr, expr)
+end
+
+function test_generator_variable_ownership()
+    model, other = Model(), Model()
+    @variable(model, x[1:2])
+    @variable(other, foreign[1:2])
+    i = GenOpt.iterator([1, 2])
+    @test JuMP.check_belongs_to_model(x[i], model) === nothing
+    @test JuMP.check_belongs_to_model(GenOpt.LazySum(x[i]), model) === nothing
+    for expr in (foreign[i], x[i] + foreign[i], (x[i] + 1.0) * foreign[i])
+        @test_throws VariableNotOwned JuMP.check_belongs_to_model(expr, model)
+    end
+    @test_throws VariableNotOwned JuMP.check_belongs_to_model(
+        GenOpt.LazySum(foreign[i]),
+        model,
+    )
+    constraint =
+        JuMP.build_constraint(error, x[i] + foreign[i], MOI.LessThan(0.0))
+    @test_throws VariableNotOwned JuMP.check_belongs_to_model(constraint, model)
+    return
+end
+
+function test_index_iterators_scalar_arguments()
+    model = Model()
+    @variable(model, x)
+    i = GenOpt.iterator([1, 2])
+    expr = (x + i)^2
+    expanded = GenOpt.index_iterators(expr.expr, ((2,),))
+    @test expanded isa GenericNonlinearExpr{VariableRef}
+    @test expanded.head == :^
+    @test length(expanded.args) == 2
+    @test expanded.args[2] == 2
+    inner = expanded.args[1]
+    @test inner isa GenericNonlinearExpr{VariableRef}
+    @test inner.head == :+
+    @test length(inner.args) == 2
+    @test inner.args[1] === x
+    @test inner.args[2] == 2
+    # Unlike the mixed expression/number arguments above, these reconstructions
+    # produce a homogeneous vector of expressions. It is an argument list, not
+    # one vector-valued argument to the nonlinear operator.
+    for (head, expr, count) in
+        ((:sin, sin(x + i), 1), (:*, (x + i) * (x + i), 2))
+        expanded = GenOpt.index_iterators(expr.expr, ((2,),))
+        @test expanded isa GenericNonlinearExpr{VariableRef}
+        @test expanded.head == head
+        @test length(expanded.args) == count
+        for inner in expanded.args
+            @test inner isa GenericNonlinearExpr{VariableRef}
+            @test inner.head == :+
+            @test inner.args == Any[x, 2]
+        end
+    end
+    return
 end
 
 function test_ind2sub()

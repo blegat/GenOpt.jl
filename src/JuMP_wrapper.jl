@@ -25,6 +25,17 @@ Base.copy(it::IteratorInExpr) = it
 
 JuMP._is_real(::Union{IteratorInExpr,IteratorIndex}) = true
 JuMP.moi_function(i::Union{IteratorInExpr,IteratorIndex}) = i
+
+# Since JuMP v1.32, the fallback of the two-argument `JuMP.moi_function` calls
+# `JuMP.check_belongs_to_model` which is not defined for these types and which
+# iterates over the elements for an `AbstractArray`. So we define the
+# two-argument method for the types used in the templates.
+function JuMP.moi_function(
+    ::JuMP.GenericModel,
+    i::Union{IteratorInExpr,IteratorIndex},
+)
+    return i
+end
 JuMP.jump_function(_, i::Union{IteratorInExpr,IteratorIndex}) = i
 
 struct ArrayOfVariables{
@@ -62,15 +73,51 @@ function ArrayOfVariables(
 end
 
 Base.size(array::ArrayOfVariables) = array.size
-function Base.getindex(A::ArrayOfVariables{T,N,V}, I...) where {T,N,V}
+# Restricting to integers lets `Base` handle other indices, e.g.,
+# `CartesianIndex` which JuMP uses when iterating in `check_belongs_to_model`
+function Base.getindex(A::ArrayOfVariables{T,N,V}, I::Integer...) where {T,N,V}
     index =
         A.offset + Base._to_linear_index(Base.CartesianIndices(A.size), I...)
     return V(A.model, MOI.VariableIndex(index))
 end
 
+function JuMP.check_belongs_to_model(
+    array::ArrayOfVariables,
+    model::JuMP.AbstractModel,
+)
+    if array.model !== model && !isempty(array)
+        throw(JuMP.VariableNotOwned(first(array)))
+    end
+    return
+end
+
+_check_belongs_to_model(::Any, ::JuMP.AbstractModel) = nothing
+
+function _check_belongs_to_model(
+    expr::Union{JuMP.AbstractJuMPScalar,ArrayOfVariables},
+    model::JuMP.AbstractModel,
+)
+    return JuMP.check_belongs_to_model(expr, model)
+end
+
+function _check_belongs_to_model(
+    expr::JuMP.GenericNonlinearExpr,
+    model::JuMP.AbstractModel,
+)
+    for arg in expr.args
+        _check_belongs_to_model(arg, model)
+    end
+    return
+end
+
 JuMP._is_real(::ArrayOfVariables) = true
 function JuMP.moi_function(array::ArrayOfVariables)
     return ContiguousArrayOfVariables(array.offset, array.size)
+end
+
+function JuMP.moi_function(model::JuMP.GenericModel, array::ArrayOfVariables)
+    JuMP.check_belongs_to_model(array, model)
+    return JuMP.moi_function(array)
 end
 function JuMP.jump_function(
     model::JuMP.AbstractModel,
@@ -110,6 +157,19 @@ end
 function JuMP.moi_function(f::ExprGenerator{E}) where {E}
     return FunctionGenerator{JuMP.moi_function_type(E)}(
         JuMP.moi_function(f.expr.expr),
+        f.expr.iterators,
+    )
+end
+
+# Since JuMP v1.32, without this method, the method for
+# `AbstractVector{<:JuMP.GenericNonlinearExpr}` would be called and the
+# generator would be expanded into a `MOI.VectorNonlinearFunction`.
+function JuMP.moi_function(
+    model::JuMP.GenericModel,
+    f::ExprGenerator{E},
+) where {E}
+    return FunctionGenerator{JuMP.moi_function_type(E)}(
+        JuMP.moi_function(model, f.expr.expr),
         f.expr.iterators,
     )
 end
@@ -183,7 +243,7 @@ end
 function index_iterators(func::JuMP.GenericNonlinearExpr, values)
     args = map(Base.Fix2(index_iterators, values), func.args)
     if any(JuMP._has_variable_ref_type, args)
-        return JuMP.GenericNonlinearExpr(func.head, args)
+        return JuMP.GenericNonlinearExpr(func.head, args...)
     elseif func.head == :getindex
         # `JuMP.jump_function` converts every number to `Float64` when it
         # converts a `MOI` function back, so the indices need to be converted
@@ -283,7 +343,10 @@ JuMP.shape(::IteratedConstraint) = JuMP.VectorShape()
 
 JuMP.reshape_vector(f::ExprGenerator, ::JuMP.VectorShape) = f
 
-function JuMP.check_belongs_to_model(con::IteratedConstraint, model)
+function JuMP.check_belongs_to_model(
+    con::IteratedConstraint,
+    model::JuMP.AbstractModel,
+)
     return JuMP.check_belongs_to_model(con.func.expr, model)
 end
 

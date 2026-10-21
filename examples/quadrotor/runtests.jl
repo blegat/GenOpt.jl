@@ -84,7 +84,8 @@ end
     @test all(a -> a isa SumGenerator, obj.args)
     terms = [prod(it -> length(it.values), a.iterators) for a in obj.args]
     # `N * p` control terms, `N * n` stage terms and `n` terminal terms.
-    @test terms == [N * 4, N * n, n]
+    # Older JuMP versions may reorder terms when flattening the objective sum.
+    @test sort(terms) == sort([N * 4, N * n, n])
 end
 
 end  # module TestQuadrotor
