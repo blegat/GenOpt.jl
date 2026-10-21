@@ -46,9 +46,10 @@ function JuMP.check_belongs_to_model(f::ExprTemplate, model::JuMP.AbstractModel)
 end
 
 """
-    struct IteratorValues{I}
-        iterator::Iterator
-        values::I
+    struct IteratorValues{T}
+        iterators::Iterators
+        index::IteratorIndex
+        value_index::Int
     end
 
 Mapped values for `iterator`. The values at `i`th position
@@ -77,7 +78,7 @@ julia> 2v + 1
 iterator([5, -5])
 ```
 """
-struct IteratorValues
+struct IteratorValues{T}
     iterators::Iterators
     index::IteratorIndex
     value_index::Int
@@ -85,6 +86,16 @@ end
 
 function _expand_filter(value::IteratorValues, values)
     return values[value.index.value][value.value_index]
+end
+
+function _iterator_value_type(values::Vector{T}, index::Int) where {T}
+    # Preserve the selected value type. Empty domains have no first value.
+    return isempty(values) ? fieldtype(T, index) : typeof(first(values)[index])
+end
+
+function IteratorValues(iterators::Iterators, index::IteratorIndex, column::Int)
+    T = _iterator_value_type(iterators[index.value].values, column)
+    return IteratorValues{T}(iterators, index, column)
 end
 
 function Base.show(io::IO, i::IteratorValues)
@@ -103,8 +114,13 @@ function _tuple(axe)
 end
 
 function iterators(axes)
-    iterators = Iterator[Iterator(_tuple(axe)) for axe in axes]
-    return IteratorValues.(Ref(iterators), IteratorIndex.(eachindex(axes)), 1)
+    iterators = Iterator[]
+    return map(eachindex(axes)) do index
+        iterator = Iterator(_tuple(axes[index]))
+        push!(iterators, iterator)
+        T = _iterator_value_type(iterator.values, 1)
+        return IteratorValues{T}(iterators, IteratorIndex(index), 1)
+    end
 end
 
 iterator(axe) = iterators([axe])[]
@@ -112,7 +128,7 @@ iterator(axe) = iterators([axe])[]
 # The following is intentionally kept close to JuMP/src/nlp_expr.jl
 const _ScalarWithIterator = Union{ExprTemplate,IteratorValues}
 
-function _univariate(f, op, x)
+function _univariate(f::F, op, x) where {F}
     V = something(
         _variable_ref_type(x),
         JuMP.VariableRef, # FIXME needed if `x` is an iterator
@@ -138,7 +154,8 @@ end
 function prepare(it::IteratorValues)
     return JuMP.GenericNonlinearExpr{JuMP.VariableRef}(
         :getindex,
-        Any[it.index, it.value_index],
+        it.index,
+        it.value_index,
     )
 end
 
@@ -148,6 +165,8 @@ _expr(f::ExprTemplate) = f.expr
 _expr(f::Number) = f
 
 _variable_ref_type(f::JuMP.AbstractJuMPScalar) = JuMP.variable_ref_type(f)
+# Numeric templates have no variables: their default V is a placeholder.
+_variable_ref_type(::ExprTemplate{<:Number}) = nothing
 _variable_ref_type(::IteratorValues) = nothing
 _variable_ref_type(::Number) = nothing
 
@@ -155,9 +174,7 @@ _iterators(::JuMP.AbstractJuMPScalar) = nothing
 _iterators(it::_ScalarWithIterator) = it.iterators
 _iterators(::Number) = nothing
 
-function _type(it::IteratorValues)
-    return typeof(first(it.iterators[it.index.value].values)[it.value_index])
-end
+_type(::IteratorValues{T}) where {T} = T
 _type(::ExprTemplate{E}) where {E} = E
 _type(f::JuMP.AbstractJuMPScalar) = typeof(f)
 _type(f::Number) = typeof(f)
@@ -167,10 +184,28 @@ function _reindex(index::IteratorIndex, positions)
     return IteratorIndex(positions[index.value])
 end
 function _reindex(expr::JuMP.GenericNonlinearExpr{V}, positions) where {V}
-    return JuMP.GenericNonlinearExpr{V}(
-        expr.head,
-        Any[_reindex(arg, positions) for arg in expr.args],
-    )
+    result = JuMP.GenericNonlinearExpr{V}(expr.head)
+    stack = Tuple{Vector{Any},Vector{Any}}[(expr.args, result.args)]
+    while !isempty(stack)
+        source, destination = pop!(stack)
+        sizehint!(destination, length(source))
+        for arg in source
+            if arg isa IteratorIndex
+                push!(destination, IteratorIndex(positions[arg.value]))
+            elseif arg isa JuMP.GenericNonlinearExpr
+                # JuMP requires nested expressions to have the root's V.
+                # Numeric iterator templates may still carry a placeholder.
+                child = JuMP.GenericNonlinearExpr{V}(arg.head)
+                push!(destination, child)
+                push!(stack, (arg.args, child.args))
+            else
+                # These leaves were validated when the source was built.
+                # Retain them, including their actual variable references.
+                push!(destination, arg)
+            end
+        end
+    end
+    return result
 end
 
 function _compatible_mappings(a::Iterator, b::Iterator)
@@ -215,17 +250,24 @@ function _merge_exprs(x, y)
     iterators
 end
 
-function _multivariate(f, op, x, y)
+function _multivariate(f::F, op, x, y) where {F}
     V = something(
         _variable_ref_type(x),
         _variable_ref_type(y),
         JuMP.VariableRef, # FIXME needed if both are iterators
     )
     x_expr, y_expr, iterators = _merge_exprs(x, y)
-    if op == :^ && y == 1
+    if f === (^) && y isa Real && y == 1
         E = _type(x)
-    elseif op == :^ && y == 2
+    elseif f === (^) && y isa Real && y == 2
         E = MA.promote_operation(*, _type(x), _type(x))
+    elseif f === (^) && (
+        _type(x) <: JuMP.AbstractJuMPScalar ||
+        _type(y) <: JuMP.AbstractJuMPScalar
+    )
+        # A symbolic exponent has no statically known polynomial degree.
+        # Avoid executing dummy expressions in MA's promotion fallback.
+        E = JuMP.GenericNonlinearExpr{V}
     else
         E = MA.promote_operation(f, _type(x), _type(y))
     end
@@ -714,8 +756,16 @@ Base.getindex(v::Array, i::_ScalarWithIterator) = _getindex(v, i)
 _push_indices!(indices, _) = indices
 _push_indices!(indices, i::IteratorIndex) = push!(indices, i)
 function _push_indices!(indices, e::JuMP.GenericNonlinearExpr)
-    for arg in e.args
-        _push_indices!(indices, arg)
+    stack = Any[e]
+    while !isempty(stack)
+        arg = pop!(stack)
+        if arg isa IteratorIndex
+            push!(indices, arg)
+        elseif arg isa JuMP.GenericNonlinearExpr
+            for i in length(arg.args):-1:1
+                push!(stack, arg.args[i])
+            end
+        end
     end
     return indices
 end
@@ -752,7 +802,7 @@ JuMP._is_real(::_DataArray) = true
 JuMP.moi_function(array::_DataArray) = array
 # The data does not contain any variable
 JuMP.check_belongs_to_model(::_DataArray, ::JuMP.AbstractModel) = nothing
-JuMP.moi_function(::JuMP.GenericModel, array::_DataArray) = array
+JuMP.moi_function(::_JuMPModel, array::_DataArray) = array
 JuMP.jump_function(_, array::_DataArray) = array
 # The data does not contain any variable or constraint index
 MOI.Utilities.map_indices(::Function, array::_DataArray) = array

@@ -6,6 +6,12 @@
 # TODO move to a package extension depending on JuMP
 import JuMP
 
+# ConcreteModel is the general model type on JuMP's JuliaC branch; released
+# JuMP versions expose GenericModel instead. Match JuMP's own fallback type
+# to avoid crossed dispatch ambiguities in two-argument moi_function.
+const _JuMPModel =
+    isdefined(JuMP, :ConcreteModel) ? JuMP.ConcreteModel : JuMP.GenericModel
+
 include("operators.jl")
 
 """
@@ -30,10 +36,7 @@ JuMP.moi_function(i::Union{IteratorInExpr,IteratorIndex}) = i
 # `JuMP.check_belongs_to_model` which is not defined for these types and which
 # iterates over the elements for an `AbstractArray`. So we define the
 # two-argument method for the types used in the templates.
-function JuMP.moi_function(
-    ::JuMP.GenericModel,
-    i::Union{IteratorInExpr,IteratorIndex},
-)
+function JuMP.moi_function(::_JuMPModel, i::Union{IteratorInExpr,IteratorIndex})
     return i
 end
 JuMP.jump_function(_, i::Union{IteratorInExpr,IteratorIndex}) = i
@@ -115,7 +118,7 @@ function JuMP.moi_function(array::ArrayOfVariables)
     return ContiguousArrayOfVariables(array.offset, array.size)
 end
 
-function JuMP.moi_function(model::JuMP.GenericModel, array::ArrayOfVariables)
+function JuMP.moi_function(model::_JuMPModel, array::ArrayOfVariables)
     JuMP.check_belongs_to_model(array, model)
     return JuMP.moi_function(array)
 end
@@ -164,10 +167,7 @@ end
 # Since JuMP v1.32, without this method, the method for
 # `AbstractVector{<:JuMP.GenericNonlinearExpr}` would be called and the
 # generator would be expanded into a `MOI.VectorNonlinearFunction`.
-function JuMP.moi_function(
-    model::JuMP.GenericModel,
-    f::ExprGenerator{E},
-) where {E}
+function JuMP.moi_function(model::_JuMPModel, f::ExprGenerator{E}) where {E}
     return FunctionGenerator{JuMP.moi_function_type(E)}(
         JuMP.moi_function(model, f.expr.expr),
         f.expr.iterators,
