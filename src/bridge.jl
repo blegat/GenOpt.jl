@@ -25,14 +25,37 @@ function MOI.Bridges.Constraint.bridge_constraint(
     func::FunctionGenerator{F},
     set::MOI.Utilities.VectorLinearSet,
 ) where {T,F,S}
-    scalar_set = S(zero(T))
-    constraints = MOI.ConstraintIndex{F,S}[]
-    sizes = Tuple(length.(func.iterators))
+    return FunctionGeneratorBridge{T,F,S}(
+        add_constraints(model, func, S(zero(T))),
+    )
+end
+
+"""
+    add_constraints(model, func::FunctionGenerator{F}, scalar_set)
+
+Expand `func` into scalar constraints of its declared function type `F`, and
+add them directly to `model` in Cartesian-product order. This is also the
+expansion used by [`FunctionGeneratorBridge`](@ref), without requiring a
+bridge optimizer. Return the vector of added constraint indices.
+"""
+function add_constraints(
+    model::MOI.ModelLike,
+    func::FunctionGenerator{F},
+    scalar_set::S,
+) where {F,S<:MOI.AbstractScalarSet}
+    sizes = length.(func.iterators)
+    constraints = Vector{MOI.ConstraintIndex{F,S}}(undef, prod(sizes))
     nit = length(func.iterators)
+    positions = ones(Int, nit)
     values = Vector{Any}(undef, nit)
-    for idx in CartesianIndices(sizes)
+    for row in eachindex(constraints)
         for k in 1:nit
-            values[k] = func.iterators[k].values[idx[k]]
+            # The positions stay within the lengths captured above. Inlining
+            # Base's array read avoids dispatch on the erased element type.
+            values[k] = @inbounds @inline getindex(
+                func.iterators[k].values,
+                positions[k],
+            )
         end
         scalar_func = _build_function(F, func.func, values)
         ci = MOI.Utilities.normalize_and_add_constraint(
@@ -40,9 +63,18 @@ function MOI.Bridges.Constraint.bridge_constraint(
             scalar_func,
             scalar_set,
         )
-        push!(constraints, ci)
+        constraints[row] = ci
+        # Match CartesianIndices: the first iterator changes fastest, without
+        # constructing a tuple whose length becomes part of its runtime type.
+        for k in 1:nit
+            positions[k] += 1
+            if positions[k] <= sizes[k]
+                break
+            end
+            positions[k] = 1
+        end
     end
-    return FunctionGeneratorBridge{T,F,S}(constraints)
+    return constraints
 end
 
 # `_build_function(F, expr, values)` walks the template once and produces a
@@ -205,7 +237,7 @@ end
 # allocation-free recursion.
 
 @inline function _add_constant!(
-    out::MOI.ScalarAffineFunction{T},
+    out::Union{MOI.ScalarAffineFunction{T},MOI.ScalarQuadraticFunction{T}},
     c::T,
 ) where {T}
     out.constant += c
@@ -239,27 +271,23 @@ macro _try_const(T, x, values)
     end
 end
 
-# `@_expand_affine_recurse out arg values coef T` expands inline at the
-# call site to the same isa-chain as `_expand_affine_typed_arg!`. We use a
-# macro (rather than an `@inline` helper) because Julia's inliner declines
-# to inline the helper when it's mutually recursive with `_expand_affine_snf!`,
-# leaving 16 B of function-call overhead per recursion level.
-macro _expand_affine_recurse(out, arg, values, coef, T)
+# Share the affine/quadratic leaf dispatch, expanding it inline because the
+# inliner declines mutually recursive helpers and leaves boxing per level.
+macro _expand_recurse(kind, out, arg, values, coef, T)
+    snf = GlobalRef(@__MODULE__, Symbol("_expand_", kind, "_snf!"))
+    fallback = GlobalRef(@__MODULE__, Symbol("_expand_", kind, "_fallback!"))
+    terms = QuoteNode(kind === :affine ? :terms : :affine_terms)
     out, arg, values, coef, T =
         esc(out), esc(arg), esc(values), esc(coef), esc(T)
     return quote
         let _a = $arg
+            while _a isa IteratorIndex
+                _a = $values[_a.value]
+            end
             if _a isa MOI.ScalarNonlinearFunction
-                _expand_affine_snf!($out, _a, $values, $coef)
+                $snf($out, _a, $values, $coef)
             elseif _a isa MOI.VariableIndex
-                push!($out.terms, MOI.ScalarAffineTerm($coef, _a))
-            elseif _a isa IteratorIndex
-                _expand_affine_typed_arg!(
-                    $out,
-                    $values[_a.value],
-                    $values,
-                    $coef,
-                )
+                push!(getfield($out, $terms), MOI.ScalarAffineTerm($coef, _a))
             elseif _a isa $T
                 _add_constant!($out, $coef * _a)
             elseif _a isa Int
@@ -267,7 +295,7 @@ macro _expand_affine_recurse(out, arg, values, coef, T)
             elseif _a isa Number
                 _add_constant!($out, $coef * $T(_a))
             else
-                _expand_affine_fallback!($out, _a, $values, $coef)
+                $fallback($out, _a, $values, $coef)
             end
         end
     end
@@ -283,21 +311,7 @@ end
     values,
     coef::T,
 ) where {T}
-    if arg isa MOI.ScalarNonlinearFunction
-        _expand_affine_snf!(out, arg::MOI.ScalarNonlinearFunction, values, coef)
-    elseif arg isa MOI.VariableIndex
-        push!(out.terms, MOI.ScalarAffineTerm(coef, arg::MOI.VariableIndex))
-    elseif arg isa IteratorIndex
-        _expand_affine!(out, values[(arg::IteratorIndex).value], values, coef)
-    elseif arg isa T
-        _add_constant!(out, coef * (arg::T))
-    elseif arg isa Int
-        _add_constant!(out, coef * T(arg::Int))
-    elseif arg isa Number
-        _add_constant!(out, coef * T(arg::Number))
-    else
-        _expand_affine_fallback!(out, arg, values, coef)
-    end
+    @_expand_recurse affine out arg values coef T
     return
 end
 
@@ -311,7 +325,7 @@ function _expand_affine_snf!(
     args = expr.args
     if h === :+
         for a in args
-            @_expand_affine_recurse out a values coef T
+            @_expand_recurse affine out a values coef T
         end
         return
     elseif h === :-
@@ -319,12 +333,12 @@ function _expand_affine_snf!(
         if n == 2
             a1, a2 = args[1], args[2]
             neg_coef = -coef
-            @_expand_affine_recurse out a1 values coef T
-            @_expand_affine_recurse out a2 values neg_coef T
+            @_expand_recurse affine out a1 values coef T
+            @_expand_recurse affine out a2 values neg_coef T
         elseif n == 1
             a1 = args[1]
             neg_coef = -coef
-            @_expand_affine_recurse out a1 values neg_coef T
+            @_expand_recurse affine out a1 values neg_coef T
         else
             error("Unexpected arity $n for `-`")
         end
@@ -334,13 +348,13 @@ function _expand_affine_snf!(
         c1 = @_try_const T a1 values
         if c1 isa T
             new_coef = coef * c1
-            @_expand_affine_recurse out a2 values new_coef T
+            @_expand_recurse affine out a2 values new_coef T
             return
         end
         c2 = @_try_const T a2 values
         if c2 isa T
             new_coef = coef * c2
-            @_expand_affine_recurse out a1 values new_coef T
+            @_expand_recurse affine out a1 values new_coef T
             return
         end
         _expand_affine_fallback!(out, expr, values, coef)
@@ -355,50 +369,6 @@ function _expand_affine_snf!(
         end
         _expand_affine_fallback!(out, expr, values, coef)
     end
-end
-
-# Internal recursion helper for SNF children. Mirrors the entry `_expand_affine!`
-# isa-chain but tail-calls back into `_expand_affine_snf!` directly when the
-# child is a `ScalarNonlinearFunction`, so the compiler keeps the dispatch
-# fully static (no allocation per recursive descent).
-@inline function _expand_affine_arg!(
-    out::MOI.ScalarAffineFunction{T},
-    arg,
-    values,
-    coef::T,
-) where {T}
-    return _expand_affine_typed_arg!(out, arg, values, coef)
-end
-
-# `_expand_affine_typed_arg!` is the common dispatch helper used by the SNF
-# expander to recurse into children. Splitting it from `_expand_affine_arg!`
-# (which is the public entry) lets the SNF expander call into it with the
-# child value typed `Any` *without* an extra function-call hop — the
-# `@inline` is honored inside the SNF expander because there's no recursion
-# of `_expand_affine_arg!` calling itself. For SNF children we go straight
-# to `_expand_affine_snf!` so each `:*` / `:+` level adds zero allocations.
-@inline function _expand_affine_typed_arg!(
-    out::MOI.ScalarAffineFunction{T},
-    arg,
-    values,
-    coef::T,
-) where {T}
-    if arg isa MOI.ScalarNonlinearFunction
-        _expand_affine_snf!(out, arg, values, coef)
-    elseif arg isa MOI.VariableIndex
-        push!(out.terms, MOI.ScalarAffineTerm(coef, arg))
-    elseif arg isa IteratorIndex
-        _expand_affine_typed_arg!(out, values[arg.value], values, coef)
-    elseif arg isa T
-        _add_constant!(out, coef * arg)
-    elseif arg isa Int
-        _add_constant!(out, coef * T(arg))
-    elseif arg isa Number
-        _add_constant!(out, coef * T(arg))
-    else
-        _expand_affine_fallback!(out, arg, values, coef)
-    end
-    return
 end
 
 # Keep uncommon forms (including embedded MOI polynomials) out of the
@@ -483,19 +453,43 @@ end
 end
 
 @inline function _integer_index(x, values)
-    if x isa IteratorIndex
-        return _integer_index(values[x.value], values)
-    elseif x isa MOI.ScalarNonlinearFunction && x.head === :getindex
+    while x isa IteratorIndex
+        x = values[x.value]
+    end
+    if x isa MOI.ScalarNonlinearFunction && x.head === :getindex
         args = x.args
-        if length(args) == 2 && args[1] isa IteratorIndex && args[2] isa Int
-            value = getindex(values[args[1].value], args[2])
-            return value isa Integer || value isa AbstractFloat
+        if length(args) == 2
+            a1, a2 = args[1], args[2]
+            if a1 isa IteratorIndex && a2 isa Int
+                value = _iterator_component(values[a1.value], a2)
+                return value isa Integer || value isa AbstractFloat
+            end
         end
         return _integer_index_fallback(x, values)
     end
     return x isa Integer ||
            x isa AbstractFloat ||
            x isa MOI.ScalarNonlinearFunction
+end
+
+@inline function _iterator_component(value, index::Int)
+    # Prepared iterators store tuples. Inline Base's field access rather than
+    # dispatching on the tuple's erased element types and length.
+    if value isa Tuple
+        return @inline getindex(value, index)
+    end
+    return getindex(value, index)
+end
+
+@inline function _float_index(value)
+    # Tuple components have erased types. Keep common scalar conversions
+    # visible to the compiler, with the ordinary conversion as fallback.
+    if value isa Float64
+        return value
+    elseif value isa Int
+        return Float64(value)
+    end
+    return Float64(value)
 end
 
 @noinline function _integer_index_fallback(x, values)
@@ -566,13 +560,16 @@ end
 # small arithmetic like `IteratorIndex(1) + 1`; we fold those here via
 # `_eval_index` rather than reusing `_try_const` (whose recursion would
 # widen the affine hot path's inferred return type to `Any`).
-@inline function _to_int(x, values)::Int
-    if x isa Integer
+Base.@nospecializeinfer @inline function _to_int(@nospecialize(x), values)::Int
+    while x isa IteratorIndex
+        x = values[x.value]
+    end
+    if x isa Int
+        return x
+    elseif x isa Integer
         return Int(x)
     elseif x isa AbstractFloat
         return Int(x)
-    elseif x isa IteratorIndex
-        return _to_int(values[x.value], values)
     elseif x isa MOI.ScalarNonlinearFunction
         return Int(_eval_index(x, values))
     else
@@ -585,13 +582,18 @@ end
 # fold to a constant. Kept separate from `_try_const_snf` because this
 # variant's recursion is fine here — `_to_int` is only called from the
 # `:getindex` path, not from the affine expression hot path.
-function _eval_index(x, values)::Float64
-    if x isa Integer
+Base.@nospecializeinfer function _eval_index(@nospecialize(x), values)::Float64
+    while x isa IteratorIndex
+        x = values[x.value]
+    end
+    if x isa Float64
+        return x
+    elseif x isa Int
+        return Float64(x)
+    elseif x isa Integer
         return Float64(x)
     elseif x isa AbstractFloat
         return Float64(x)
-    elseif x isa IteratorIndex
-        return _eval_index(values[x.value], values)
     elseif x isa MOI.ScalarNonlinearFunction
         h = x.head
         args = x.args
@@ -623,7 +625,9 @@ function _eval_index(x, values)::Float64
             coll = args[1]
             v = _expand(coll, values)
             if n == 2
-                return Float64(getindex(v, _to_int(args[2], values)))
+                return _float_index(
+                    _iterator_component(v, _to_int(args[2], values)),
+                )
             elseif n == 3
                 return Float64(
                     getindex(
@@ -729,7 +733,7 @@ end
 
 # This check is deliberately conservative: an unrecognized variable lookup
 # may reach the general folder, but a known variable cannot be a constant.
-function _contains_variable(expr, values)
+Base.@nospecializeinfer function _contains_variable(@nospecialize(expr), values)
     if expr isa MOI.VariableIndex
         return true
     elseif expr isa IteratorIndex
@@ -755,7 +759,19 @@ end
 # else pushes into `out.affine_terms` and `out.constant`. Quadratic terms
 # follow MOI's convention: diagonal coefficients are stored doubled.
 
-function _expand_quadratic!(
+# Like the affine walker, narrow children loaded from Vector{Any} before
+# recursing, keeping ordinary polynomial operations statically dispatched.
+@inline function _expand_quadratic!(
+    out::MOI.ScalarQuadraticFunction{T},
+    expr,
+    values,
+    coef::T,
+) where {T}
+    @_expand_recurse quadratic out expr values coef T
+    return
+end
+
+function _expand_quadratic_snf!(
     out::MOI.ScalarQuadraticFunction{T},
     expr::MOI.ScalarNonlinearFunction,
     values,
@@ -765,43 +781,52 @@ function _expand_quadratic!(
     args = expr.args
     if h === :+
         for a in args
-            _expand_quadratic!(out, a, values, coef)
+            @_expand_recurse quadratic out a values coef T
         end
         return
     elseif h === :-
         n = length(args)
         if n == 2
-            _expand_quadratic!(out, args[1], values, coef)
-            _expand_quadratic!(out, args[2], values, -coef)
+            a1, a2 = args[1], args[2]
+            neg_coef = -coef
+            @_expand_recurse quadratic out a1 values coef T
+            @_expand_recurse quadratic out a2 values neg_coef T
         elseif n == 1
-            _expand_quadratic!(out, args[1], values, -coef)
+            a1 = args[1]
+            neg_coef = -coef
+            @_expand_recurse quadratic out a1 values neg_coef T
         else
             error("Unexpected arity $n for `-`")
         end
         return
     elseif h === :* && length(args) == 2
         a1, a2 = args[1], args[2]
-        c1 = _try_const(T, a1, values)
+        c1 = @_try_const T a1 values
         if c1 !== nothing
-            _expand_quadratic!(out, a2, values, coef * c1)
+            new_coef = coef * c1
+            @_expand_recurse quadratic out a2 values new_coef T
             return
         end
-        c2 = _try_const(T, a2, values)
+        c2 = @_try_const T a2 values
         if c2 !== nothing
-            _expand_quadratic!(out, a1, values, coef * c2)
+            new_coef = coef * c2
+            @_expand_recurse quadratic out a1 values new_coef T
             return
         end
         # Both sides have variables → product is quadratic. Materialize each
         # side as an affine form (using the fast affine path) and multiply.
         saf1 = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
-        _expand_affine!(saf1, a1, values, one(T))
+        unit = one(T)
+        @_expand_recurse affine saf1 a1 values unit T
         saf2 = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
-        _expand_affine!(saf2, a2, values, one(T))
+        @_expand_recurse affine saf2 a2 values unit T
         _accumulate_product!(out, saf1, saf2, coef)
         return
-    elseif h === :^ && length(args) == 2 && args[2] == 2
+    elseif h === :^ && length(args) == 2 && _is_square_exponent(args[2])
         saf = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
-        _expand_affine!(saf, args[1], values, one(T))
+        unit = one(T)
+        arg = args[1]
+        @_expand_recurse affine saf arg values unit T
         _accumulate_product!(out, saf, saf, coef)
         return
     elseif h === :getindex
@@ -809,28 +834,28 @@ function _expand_quadratic!(
         # Same trick as `_expand_getindex_affine!`: enumerate the concrete
         # `N` arities so the load from `Vector{Any}` is allocation-free for
         # the common cases (`N = 0, 1, 2`).
-        if coll isa ContiguousArrayOfVariables{0}
-            v = _getindex_concrete(coll, args, values)
+        if coll isa ContiguousArrayOfVariables{0} && length(args) == 1
+            v = getindex(coll)
             push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
             return
-        elseif coll isa ContiguousArrayOfVariables{1}
-            v = _getindex_concrete(coll, args, values)
+        elseif coll isa ContiguousArrayOfVariables{1} && length(args) == 2
+            v = _getindex_concrete1(coll, args, values)
             push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
             return
-        elseif coll isa ContiguousArrayOfVariables{2}
-            v = _getindex_concrete(coll, args, values)
+        elseif coll isa ContiguousArrayOfVariables{2} && length(args) == 3
+            v = _getindex_concrete2(coll, args, values)
             push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
             return
         elseif coll isa ContiguousArrayOfVariables
             v = _getindex_concrete(coll, args, values)
             push!(out.affine_terms, MOI.ScalarAffineTerm(coef, v))
             return
-        elseif coll isa Vector{T}
-            x = _getindex_concrete(coll, args, values)
+        elseif coll isa Vector{T} && length(args) == 2
+            x = _getindex_concrete1(coll, args, values)
             out.constant += coef * x
             return
-        elseif coll isa Matrix{T}
-            x = _getindex_concrete(coll, args, values)
+        elseif coll isa Matrix{T} && length(args) == 3
+            x = _getindex_concrete2(coll, args, values)
             out.constant += coef * x
             return
         elseif coll isa AbstractArray{<:Number}
@@ -852,42 +877,12 @@ function _expand_quadratic!(
     end
 end
 
-function _expand_quadratic!(
-    out::MOI.ScalarQuadraticFunction{T},
-    x::Number,
-    values,
-    coef::T,
-) where {T}
-    out.constant += coef * T(x)
-    return
-end
-
-function _expand_quadratic!(
-    out::MOI.ScalarQuadraticFunction{T},
-    x::MOI.VariableIndex,
-    values,
-    coef::T,
-) where {T}
-    push!(out.affine_terms, MOI.ScalarAffineTerm(coef, x))
-    return
-end
-
-function _expand_quadratic!(
-    out::MOI.ScalarQuadraticFunction{T},
-    x::IteratorIndex,
-    values,
-    coef::T,
-) where {T}
-    return _expand_quadratic!(out, values[x.value], values, coef)
-end
-
-function _expand_quadratic!(
-    out::MOI.ScalarQuadraticFunction{T},
-    expr,
-    values,
-    coef::T,
-) where {T}
-    return _expand_quadratic_fallback!(out, expr, values, coef)
+@inline function _is_square_exponent(value)
+    # The exponent is read from Vector{Any}; expose the literal integer case.
+    if value isa Int
+        return value == 2
+    end
+    return value == 2
 end
 
 function _expand_quadratic_fallback!(

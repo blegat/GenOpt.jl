@@ -45,6 +45,54 @@ function _minimize!(optimizer, obj)
     return MOI.set(optimizer, MOI.ObjectiveFunction{typeof(obj)}(), obj)
 end
 
+function test_add_constraints_without_bridges()
+    model = MOI.Utilities.Model{Float64}()
+    variables = MOI.add_variables(model, 2)
+    MOI.add_constraint(model, variables[1], MOI.GreaterThan(0.0))
+    template = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[
+            GenOpt.ContiguousArrayOfVariables(0, (2,)),
+            GenOpt.IteratorIndex(1),
+        ],
+    )
+    iterators = GenOpt.Iterator[GenOpt.Iterator([1, 2])]
+    affine = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
+        template,
+        iterators,
+    )
+    indices =
+        @inferred GenOpt.add_constraints(model, affine, MOI.GreaterThan(1.0))
+    @test length(indices) == 2
+    for (index, variable) in zip(indices, variables)
+        @test index isa MOI.ConstraintIndex{
+            MOI.ScalarAffineFunction{Float64},
+            MOI.GreaterThan{Float64},
+        }
+        @test MOI.get(model, MOI.ConstraintFunction(), index) ≈ 1.0 * variable
+    end
+    @test MOI.get(
+        model,
+        MOI.NumberOfConstraints{MOI.VariableIndex,MOI.GreaterThan{Float64}}(),
+    ) == 1
+    quadratic = GenOpt.FunctionGenerator{MOI.ScalarQuadraticFunction{Float64}}(
+        MOI.ScalarNonlinearFunction(:*, Any[template, template]),
+        iterators,
+    )
+    indices =
+        @inferred GenOpt.add_constraints(model, quadratic, MOI.LessThan(9.0))
+    @test length(indices) == 2
+    for (index, variable) in zip(indices, variables)
+        @test index isa MOI.ConstraintIndex{
+            MOI.ScalarQuadraticFunction{Float64},
+            MOI.LessThan{Float64},
+        }
+        @test MOI.get(model, MOI.ConstraintFunction(), index) ≈
+              1.0 * variable * variable
+    end
+    return
+end
+
 function test_runtests_simple()
     # x[i] - 1 >= 0 for i in 1..3
     # normalize_and_add moves constant to set: 1.0*x[i] + 0.0 >= 1.0
@@ -670,6 +718,22 @@ function test_affine_jump_wrapped_iterator_index()
     @test out.terms[2].variable == MOI.VariableIndex(3)
 end
 
+function test_chained_iterator_indices()
+    index = GenOpt.IteratorIndex(1)
+    values = Any[GenOpt.IteratorIndex(2), 3.0]
+    @test @inferred(GenOpt._integer_index(index, values))
+    @test @inferred(GenOpt._to_int(index, values)) === 3
+    @test @inferred(GenOpt._eval_index(index, values)) === 3.0
+    values[2] = CartesianIndex(3)
+    @test !GenOpt._integer_index(index, values)
+    wrapped = MOI.ScalarNonlinearFunction(:getindex, Any[index, 1])
+    for value in (2, 2.0, 2.0f0)
+        @test GenOpt._eval_index(wrapped, Any[(value,)]) === 2.0
+        @test GenOpt._eval_index(wrapped, Any[[value]]) === 2.0
+    end
+    return
+end
+
 function test_eval_index_getindex_iterator_index_alloc()
     # JuMP-wrapped iterator-reference pattern (`SNF(:getindex, [IteratorIndex(k), j])`).
     # `_eval_index` is intentionally allowed small allocations — see the comment
@@ -1076,6 +1140,73 @@ function test_try_const_nested_affine_allocation_free()
         @test _loop(T, template, values, 1) === nothing
         if VERSION >= v"1.12"
             @test (@allocated _loop(T, template, values, 1000)) == 0
+        end
+    end
+    return
+end
+
+function test_expand_quadratic_affine_recursion_allocation_free()
+    function _loop!(
+        out::MOI.ScalarQuadraticFunction{T},
+        expr,
+        values,
+        n,
+    ) where {T}
+        for _ in 1:n
+            empty!(out.quadratic_terms)
+            empty!(out.affine_terms)
+            out.constant = zero(T)
+            GenOpt._expand_quadratic!(out, expr, values, one(T))
+        end
+        return
+    end
+    snf(head, args...) = MOI.ScalarNonlinearFunction(head, Any[args...])
+    block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+    index = GenOpt.IteratorIndex(1)
+    for T in (Float32, Float64)
+        template = snf(
+            :+,
+            snf(
+                :-,
+                snf(:*, T(2), snf(:getindex, block, 1)),
+                snf(:getindex, block, index),
+            ),
+            snf(:*, snf(:getindex, T[2, 3, 5], index), MOI.VariableIndex(3)),
+            snf(:-, snf(:+, GenOpt.IteratorIndex(2), one(T))),
+            snf(:*, GenOpt.IteratorIndex(3), T(2)),
+            1,
+        )
+        # Follow chained placeholders to both numeric and variable leaves.
+        values = Any[
+            2,
+            GenOpt.IteratorIndex(4),
+            GenOpt.IteratorIndex(5),
+            T(3),
+            MOI.VariableIndex(1),
+        ]
+        out = MOI.ScalarQuadraticFunction(
+            MOI.ScalarQuadraticTerm{T}[],
+            MOI.ScalarAffineTerm{T}[],
+            zero(T),
+        )
+        sizehint!(out.affine_terms, 4)
+        @test @inferred(
+            GenOpt._expand_quadratic!(out, template, values, one(T)),
+        ) === nothing
+        @test isempty(out.quadratic_terms)
+        @test out.affine_terms == [
+            MOI.ScalarAffineTerm(T(2), MOI.VariableIndex(1)),
+            MOI.ScalarAffineTerm(-one(T), MOI.VariableIndex(2)),
+            MOI.ScalarAffineTerm(T(3), MOI.VariableIndex(3)),
+            MOI.ScalarAffineTerm(T(2), MOI.VariableIndex(1)),
+        ]
+        @test out.constant === T(-3)
+        # Scalar products and lookups can recurse into the pre-sized output
+        # without constructing intermediate polynomial or substituted trees.
+        _loop!(out, template, values, 1)
+        # Older Julia versions still box this mutually recursive path.
+        if VERSION >= v"1.12"
+            @test (@allocated _loop!(out, template, values, 1000)) == 0
         end
     end
     return
