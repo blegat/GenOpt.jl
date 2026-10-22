@@ -135,6 +135,7 @@ function test_filtered_sum_moi_utilities()
     group = [1, 1, 2]
     lazy = GenOpt.lazy_sum(x[j] for j in 1:3 if group[j] == 1)
     generator = JuMP.moi_function(lazy)
+    @test JuMP.moi_function_type(typeof(lazy)) == typeof(generator)
 
     copied = copy(generator)
     @test copied isa GenOpt.FilteredSumGenerator
@@ -159,6 +160,47 @@ function test_filtered_sum_moi_utilities()
     # The variables are no longer contiguous
     index_map[JuMP.index(x[2])] = MOI.VariableIndex(10)
     @test_throws ErrorException MOI.Utilities.map_indices(index_map, copied)
+    return
+end
+
+function test_lazy_sum_moi_function_type()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    lazy = GenOpt.lazy_sum(x[i] for i in 1:3)
+    @test JuMP.moi_function_type(typeof(lazy)) ==
+          typeof(JuMP.moi_function(lazy))
+    constraint = JuMP.@constraint(model, lazy <= 1.0)
+    @test JuMP.is_valid(model, constraint)
+    stored = MOI.get(
+        JuMP.backend(model),
+        MOI.ConstraintFunction(),
+        JuMP.index(constraint),
+    )
+    @test stored.args[1] isa GenOpt.SumGenerator
+    return
+end
+
+function test_lazy_sum_unary_operators()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    sums = (
+        GenOpt.lazy_sum(x[i] for i in 1:3),
+        GenOpt.lazy_sum(x[i] for i in 1:3 if i == 2),
+        GenOpt.lazy_sum(i + 1 for i in 1:3),
+        GenOpt.lazy_sum(i + 1 for i in 1:3 if i == 2),
+    )
+    for sum in sums
+        @test +sum === sum
+        negative = -sum
+        @test negative isa
+              JuMP.GenericNonlinearExpr{JuMP.variable_ref_type(sum)}
+        @test negative.head == :-
+        @test only(negative.args) === sum
+        func = JuMP.moi_function(negative)
+        @test func.head == :-
+        @test typeof(only(func.args)) == JuMP.moi_function_type(typeof(sum))
+        @test only(func.args).iterators === sum.iterators
+    end
     return
 end
 

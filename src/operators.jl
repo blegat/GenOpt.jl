@@ -83,6 +83,10 @@ struct IteratorValues
     value_index::Int
 end
 
+function _expand_filter(value::IteratorValues, values)
+    return values[value.index.value][value.value_index]
+end
+
 function Base.show(io::IO, i::IteratorValues)
     print(io, "iterator(")
     print(io, getindex.(i.iterators[i.index.value].values, i.value_index))
@@ -320,6 +324,10 @@ end
 
 const _AnyLazySum{E,V} = Union{LazySum{E,V},FilteredLazySum{E,V}}
 
+function Base.:-(sum::_AnyLazySum{E,V}) where {E,V}
+    return JuMP.GenericNonlinearExpr{V}(:-, Any[sum])
+end
+
 JuMP._is_real(::_AnyLazySum) = true
 JuMP.variable_ref_type(s::_AnyLazySum) = JuMP.variable_ref_type(s.expr)
 
@@ -341,11 +349,23 @@ function MA.promote_operation(
     return JuMP.GenericNonlinearExpr{V}
 end
 
+_sum_function_type(::Type{E}) where {E} = JuMP.moi_function_type(E)
+
+# A numeric template has no MOI numeric function type. Preserve its nonlinear
+# representation without choosing a coefficient type for the resulting sum.
+function _sum_function_type(::Type{E}) where {E<:Real}
+    return MOI.ScalarNonlinearFunction
+end
+
 function JuMP.moi_function(s::LazySum{E}) where {E}
-    return SumGenerator{JuMP.moi_function_type(E)}(
+    return SumGenerator{_sum_function_type(E)}(
         JuMP.moi_function(s.expr),
         s.iterators,
     )
+end
+
+function JuMP.moi_function_type(::Type{LazySum{E,V}}) where {E,V}
+    return SumGenerator{_sum_function_type(E)}
 end
 
 function JuMP.jump_function_type(
@@ -359,11 +379,15 @@ function JuMP.jump_function_type(
 end
 
 function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
-    return FilteredSumGenerator{JuMP.moi_function_type(E)}(
+    return FilteredSumGenerator{_sum_function_type(E)}(
         JuMP.moi_function(s.expr),
         s.iterators,
         s.filter,
     )
+end
+
+function JuMP.moi_function_type(::Type{FilteredLazySum{E,V}}) where {E,V}
+    return FilteredSumGenerator{_sum_function_type(E)}
 end
 
 function JuMP.jump_function_type(
@@ -384,6 +408,10 @@ end
 # and we allow ourself to define `Base.:(==)(::_Filtered, ::Any)`
 struct _Filtered{I}
     iterator::I
+end
+
+function _expand_filter(value::_Filtered, values)
+    return _expand_filter(value.iterator, values)
 end
 
 Base.getindex(v::Array, i::_Filtered) = _Filtered(_getindex(v, i.iterator))
