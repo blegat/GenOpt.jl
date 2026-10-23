@@ -248,7 +248,6 @@ end
 # inline at the call site, returning `nothing` or a `T`. Inlining is required
 # because the helper would otherwise pay one box per call when `x` is `Any`
 # (from `Vector{Any}`) and dispatches into the SNF branch.
-# Both macros attribute expanded code to the call site for coverage and traces.
 macro _try_const(T, x, values)
     T, x, values = esc(T), esc(x), esc(values)
     body = quote
@@ -270,6 +269,9 @@ macro _try_const(T, x, values)
             end
         end
     end
+    # quote inserts line-number nodes pointing into the macro definition.
+    # Those locations caused execution to be attributed there,
+    # leaving some macro invocation lines falsely marked uncovered
     Base.remove_linenums!(body)
     return Expr(:block, __source__, body)
 end
