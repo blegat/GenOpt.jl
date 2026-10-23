@@ -1,0 +1,37 @@
+name: JuliaC
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13.2'
+      - uses: julia-actions/cache@v3
+      - name: Instantiate the bridge workload
+        shell: julia --color=yes --project=test/JuliaC/MyApp {0}
+        run: |
+          using Pkg
+          Pkg.develop(PackageSpec(path=pwd()))
+          Pkg.instantiate()
+      - name: Install JuliaC
+        run: julia --project=@juliac -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaC", version="0.3.12"))'
+      - name: Run the bridge workload with Julia
+        run: julia --color=yes --project=test/JuliaC/MyApp test/JuliaC/runtests.jl
+      - name: Compile the bridge workload
+        run: >
+          julia --project=@juliac -m JuliaC
+          --output-exe genopt_bridges
+          --trim=unsafe-warn --bundle test/JuliaC/build
+          test/JuliaC/MyApp
+      - name: Run the compiled bridge workload
+        run: test/JuliaC/build/bin/genopt_bridges

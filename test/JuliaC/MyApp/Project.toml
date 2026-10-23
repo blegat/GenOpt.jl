@@ -1,0 +1,14 @@
+name = "MyApp"
+uuid = "db720973-4501-4752-a6cf-243dbe42b2b4"
+
+[deps]
+GenOpt = "f2c049d8-7489-4223-990c-4f1c121a4cde"
+MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
+
+[sources]
+GenOpt = {path = "../../.."}
+
+[compat]
+GenOpt = "0.2"
+MathOptInterface = "1.51"
+julia = "1.10"
