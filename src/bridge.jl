@@ -248,9 +248,10 @@ end
 # inline at the call site, returning `nothing` or a `T`. Inlining is required
 # because the helper would otherwise pay one box per call when `x` is `Any`
 # (from `Vector{Any}`) and dispatches into the SNF branch.
+# Both macros attribute expanded code to the call site for coverage and traces.
 macro _try_const(T, x, values)
     T, x, values = esc(T), esc(x), esc(values)
-    return quote
+    body = quote
         let _x = $x
             if _x isa $T
                 _x
@@ -269,6 +270,8 @@ macro _try_const(T, x, values)
             end
         end
     end
+    Base.remove_linenums!(body)
+    return Expr(:block, __source__, body)
 end
 
 # Share the affine/quadratic leaf dispatch, expanding it inline because the
@@ -279,7 +282,7 @@ macro _expand_recurse(kind, out, arg, values, coef, T)
     terms = QuoteNode(kind === :affine ? :terms : :affine_terms)
     out, arg, values, coef, T =
         esc(out), esc(arg), esc(values), esc(coef), esc(T)
-    return quote
+    body = quote
         let _a = $arg
             while _a isa IteratorIndex
                 _a = $values[_a.value]
@@ -299,6 +302,8 @@ macro _expand_recurse(kind, out, arg, values, coef, T)
             end
         end
     end
+    Base.remove_linenums!(body)
+    return Expr(:block, __source__, body)
 end
 
 # Entry point. `arg` is typically read out of `Vector{Any}` (so its static
