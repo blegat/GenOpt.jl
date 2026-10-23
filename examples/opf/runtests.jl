@@ -37,8 +37,10 @@ const NONLINEAR = FunctionGenerator{MOI.ScalarNonlinearFunction}
     end
     # The reference bus angle, over the single reference bus.
     @test dims[(AFFINE, MOI.Zeros)] == [1]
-    # The 4 branch flow definitions and the 2 bus power balances, over 3 components each.
-    @test dims[(NONLINEAR, MOI.Zeros)] == fill(3, 6)
+    # The 4 branch flow definitions contain trigonometric terms.
+    @test dims[(NONLINEAR, MOI.Zeros)] == fill(3, 4)
+    # The 2 bus power balances contain affine sums and squared voltages.
+    @test dims[(QUADRATIC, MOI.Zeros)] == [3, 3]
     # `angmin[i] <= va[..] - va[..] <= angmax[i]` stays one interval constraint carrying
     # the per-branch bounds, rather than two inequalities per branch.
     @test dims[(AFFINE, MOI.HyperRectangle{Float64})] == [3]
@@ -53,9 +55,12 @@ end
     b = JuMP.backend(model)
     F = MOI.get(b, MOI.ObjectiveFunctionType())
     # The `lazy_sum` over the generators is not expanded into 3 cost terms.
-    @test F == SumGenerator{MOI.ScalarQuadraticFunction{Float64}}
+    @test F == GenOpt.PolynomialFunction{MOI.ScalarQuadraticFunction{Float64}}
     obj = MOI.get(b, MOI.ObjectiveFunction{F}())
-    @test prod(it -> length(it.values), obj.iterators) == 3
+    @test obj.func.head == :+
+    generator = only(obj.func.args)
+    @test generator isa SumGenerator{MOI.ScalarQuadraticFunction{Float64}}
+    @test prod(it -> length(it.values), generator.iterators) == 3
 end
 
 end  # module TestOPF
