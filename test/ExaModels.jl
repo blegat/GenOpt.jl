@@ -159,6 +159,50 @@ function test_single_sum_objective()
     return
 end
 
+function test_typed_sum_structure()
+    for mixed in (false, true)
+        model = Model()
+        @variable(model, x[1:4])
+        linear = GenOpt.lazy_sum(i * x[i] for i in 1:4)
+        quadratic = GenOpt.lazy_sum(x[i]^2 for i in 1:4)
+        expression = mixed ? linear + quadratic : quadratic
+        @objective(model, Min, expression)
+        func = MOI.get(
+            backend(model),
+            MOI.ObjectiveFunction{JuMP.moi_function_type(typeof(expression))}(),
+        )
+        @test func isa GenOpt.PolynomialFunction
+        optimizer = ExaModels.Optimizer(nothing)
+        set_optimizer(model, () -> optimizer)
+        MOI.Utilities.attach_optimizer(backend(model))
+        @test length(optimizer.objs) == (mixed ? 2 : 1)
+        @test all(bin -> length(bin.data) == 4, optimizer.objs)
+    end
+    return
+end
+
+function test_polynomial_leaf_unwrapping()
+    extension = Base.get_extension(GenOpt, :GenOptExaModelsExt)
+    F = MOI.ScalarAffineFunction{Float64}
+    lookup = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[GenOpt.ContiguousArrayOfVariables(0, (1,)), 1],
+    )
+    template = MOI.ScalarNonlinearFunction(:+, Any[lookup, 2.0])
+    wrapped = GenOpt.PolynomialFunction{F}(template)
+    @test typeof(extension.exagen(wrapped, nothing)) ==
+          typeof(extension.exagen(template, nothing))
+    func = MOI.ScalarNonlinearFunction(:+, Any[MOI.VariableIndex(1), 2.0])
+    wrapped = GenOpt.PolynomialFunction{F}(func)
+    head, data = extension.ExaModelsMOI._exafy(wrapped, (), nothing)
+    expected_head, expected_data =
+        extension.ExaModelsMOI._exafy(func, (), nothing)
+    @test typeof(head) == typeof(expected_head)
+    @test data == expected_data
+    @test wrapped.func === func
+    return
+end
+
 function test_deferred_getindex()
     # `d[i + j]` involves two iterators so it is kept as a `getindex` of the
     # data which is not supported by the extension

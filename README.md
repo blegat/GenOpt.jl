@@ -41,6 +41,35 @@ To create a grouped sum, use `lazy_sum` as follows:
     lazy_sum(0.5 * R[j] * (u[i, j]^2) for i in 1:N, j in 1:p),
 )
 ```
+## Solve polynomial models with HiGHS
+
+Register the generator and scalar polynomial bridges to use affine and
+quadratic lazy sums with HiGHS:
+
+```julia
+using JuMP, GenOpt
+import HiGHS
+
+model = Model(HiGHS.Optimizer)
+add_bridge(model, GenOpt.FunctionGeneratorBridge)
+add_bridge(model, GenOpt.PolynomialFunctionBridge)
+@variable(model, x[1:4])
+@constraint(model, [i in 1:4], x[i] >= 0, container = ParametrizedArray)
+@constraint(model, lazy_sum(x[i] + 1 for i in 1:4) <= 12)
+@objective(model, Min, lazy_sum((x[i] - i)^2 for i in 1:4))
+optimize!(model)
+```
+
+GenOpt tracks known polynomial expressions using `PolynomialFunction{F}`, where
+`F` is the affine or quadratic output type. The shared builders accumulate lazy
+sum terms directly into that type when the optimizer needs it. HiGHS supports
+quadratic objectives, but not quadratic constraints. Ordinary, untagged
+`MOI.ScalarNonlinearFunction` inputs are not handled by these polynomial bridges.
+
+Polynomial lowering currently requires filters to refer only to the iterators
+bound by their sum. A filter depending on an enclosing generator raises an
+explicit error.
+
 ## Solve with ExaModels
 
 Install ExaModels and a solver such as MadNLP:

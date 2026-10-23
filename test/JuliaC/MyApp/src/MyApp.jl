@@ -228,6 +228,60 @@ function check_no_iterators()
     return
 end
 
+function check_typed_polynomials()
+    model = BridgeModel{Float64}()
+    x = MOI.add_variables(model, 3)
+    block = GenOpt.ContiguousArrayOfVariables(0, (3,))
+    i = GenOpt.IteratorIndex(1)
+    sum = GenOpt.SumGenerator{Affine}(
+        snf(:*, i, snf(:getindex, block, i)),
+        GenOpt.Iterator[GenOpt.Iterator([1, 2, 3])],
+    )
+    affine = GenOpt.PolynomialFunction{Affine}(snf(:+, sum, 1.0))
+    lowered = convert(Affine, affine)
+    @assert lowered.constant == 1.0
+    @assert length(lowered.terms) == 3
+    @assert [term.coefficient for term in lowered.terms] == [1.0, 2.0, 3.0]
+    result = MOI.Bridges.Constraint.bridge_constraint(
+        GenOpt.PolynomialFunctionBridge{Float64,Affine,MOI.LessThan{Float64}},
+        model,
+        affine,
+        MOI.LessThan(10.0),
+    )
+    @assert MOI.get(model, MOI.ConstraintSet(), result.constraint).upper == 9.0
+    @assert MOI.get(model, MOI.ConstraintFunction(), result.constraint).constant ==
+            0.0
+    for exponent in (1, 1.0, 1.0f0)
+        identity = GenOpt.PolynomialFunction{Affine}(snf(:^, sum, exponent))
+        f = convert(Affine, identity)
+        @assert length(f.terms) == 3
+        @assert f.constant == 0.0
+    end
+    for exponent in (2.0, 2.0f0)
+        square = GenOpt.PolynomialFunction{Quadratic}(snf(:^, sum, exponent))
+        @assert length(convert(Quadratic, square).quadratic_terms) == 9
+    end
+    quadratic = GenOpt.PolynomialFunction{Quadratic}(snf(:^, sum, 2))
+    objective_bridge = MOI.Bridges.Objective.bridge_objective(
+        MOI.Bridges.Objective.FunctionConversionBridge{
+            Float64,
+            Quadratic,
+            typeof(quadratic),
+        },
+        model,
+        quadratic,
+    )
+    q = MOI.get(model, MOI.ObjectiveFunction{Quadratic}())
+    @assert length(q.quadratic_terms) == 9
+    @assert isempty(q.affine_terms)
+    @assert q.constant == 0.0
+    @assert MOI.get(objective_bridge, MOI.NumberOfVariables()) == 0
+    @assert MOI.get(model, MOI.ConstraintFunction(), result).func isa
+            MOI.ScalarNonlinearFunction
+    @assert length(x) == 3
+    return
+end
+
 function main(args::Vector{String})::Cint
     check_affine(MOI.GreaterThan{Float64}, MOI.Nonnegatives(3))
     check_affine(MOI.LessThan{Float64}, MOI.Nonpositives(3))
@@ -237,6 +291,7 @@ function main(args::Vector{String})::Cint
     check_quadratic()
     check_empty()
     check_no_iterators()
+    check_typed_polynomials()
     return 0
 end
 

@@ -7,7 +7,11 @@ module GenOptExaModelsExt
 
 import ExaModels
 import GenOpt:
-    FunctionGenerator, SumGenerator, ContiguousArrayOfVariables, IteratorIndex
+    FunctionGenerator,
+    SumGenerator,
+    PolynomialFunction,
+    ContiguousArrayOfVariables,
+    IteratorIndex
 import MathOptInterface as MOI
 
 # The triggers of this extension are a strict superset of the ones of
@@ -17,6 +21,34 @@ import MathOptInterface as MOI
 const ExaModelsMOI = Base.get_extension(ExaModels, :ExaModelsMOI)
 
 # Objective
+
+function MOI.supports(
+    ::ExaModelsMOI.Optimizer,
+    ::MOI.ObjectiveFunction{<:PolynomialFunction},
+)
+    return true
+end
+
+function MOI.set(
+    model::ExaModelsMOI.Optimizer,
+    ::MOI.ObjectiveFunction{F},
+    f::F,
+) where {F<:PolynomialFunction}
+    # Unwrap the degree tag, keeping generator templates and iterator data.
+    return MOI.set(
+        model,
+        MOI.ObjectiveFunction{MOI.ScalarNonlinearFunction}(),
+        f.func,
+    )
+end
+
+function ExaModelsMOI.update_bin!(
+    bins::Vector{ExaModelsMOI.Bin},
+    fn::ExaModelsMOI.AbstractBin,
+    f::PolynomialFunction,
+)
+    return ExaModelsMOI.update_bin!(bins, fn, f.func)
+end
 
 function MOI.supports(
     ::ExaModelsMOI.Optimizer,
@@ -103,6 +135,11 @@ function _data(iterators)
 end
 
 exagen(α::Number, _) = α
+exagen(f::PolynomialFunction, offsets) = exagen(f.func, offsets)
+
+function ExaModelsMOI._exafy(f::PolynomialFunction, data::Tuple, var_to_data)
+    return ExaModelsMOI._exafy(f.func, data, var_to_data)
+end
 
 function exagen(f::MOI.ScalarNonlinearFunction, offsets)
     if f.head != :getindex

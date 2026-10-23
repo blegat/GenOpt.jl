@@ -134,7 +134,9 @@ function test_filtered_sum_moi_utilities()
     JuMP.@variable(model, x[1:3])
     group = [1, 1, 2]
     lazy = GenOpt.lazy_sum(x[j] for j in 1:3 if group[j] == 1)
-    generator = JuMP.moi_function(lazy)
+    polynomial = JuMP.moi_function(lazy)
+    @test JuMP.moi_function_type(typeof(lazy)) == typeof(polynomial)
+    generator = only(polynomial.func.args)
 
     copied = copy(generator)
     @test copied isa GenOpt.FilteredSumGenerator
@@ -162,6 +164,49 @@ function test_filtered_sum_moi_utilities()
     return
 end
 
+function test_lazy_sum_moi_function_type()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    lazy = GenOpt.lazy_sum(x[i] for i in 1:3)
+    @test JuMP.moi_function_type(typeof(lazy)) ==
+          typeof(JuMP.moi_function(lazy))
+    constraint = JuMP.@constraint(model, lazy <= 1.0)
+    @test JuMP.is_valid(model, constraint)
+    stored = MOI.get(
+        JuMP.backend(model),
+        MOI.ConstraintFunction(),
+        JuMP.index(constraint),
+    )
+    @test stored isa
+          GenOpt.PolynomialFunction{MOI.ScalarAffineFunction{Float64}}
+    @test _has_sum(stored)
+    return
+end
+
+function test_lazy_sum_unary_operators()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    sums = (
+        GenOpt.lazy_sum(x[i] for i in 1:3),
+        GenOpt.lazy_sum(x[i] for i in 1:3 if i == 2),
+        GenOpt.lazy_sum(i + 1 for i in 1:3),
+        GenOpt.lazy_sum(i + 1 for i in 1:3 if i == 2),
+    )
+    for sum in sums
+        @test +sum === sum
+        negative = -sum
+        @test negative isa GenOpt.PolynomialExpr
+        @test negative.expr.head == :-
+        @test only(negative.expr.args) === sum
+        func = JuMP.moi_function(negative)
+        @test func.func.head == :-
+        child = only(func.func.args)
+        @test typeof(child) == JuMP.moi_function_type(typeof(sum))
+        @test only(child.func.args).iterators === sum.iterators
+    end
+    return
+end
+
 function test_deferred_getindex_map_indices()
     model = JuMP.Model()
     JuMP.@variable(model, x[1:2])
@@ -180,12 +225,30 @@ end
 
 _data_arrays(::Any) = GenOpt._DataArray[]
 _data_arrays(a::GenOpt._DataArray) = [a]
+function _data_arrays(
+    f::Union{
+        GenOpt.PolynomialFunction,
+        GenOpt.SumGenerator,
+        GenOpt.FilteredSumGenerator,
+    },
+)
+    return _data_arrays(f.func)
+end
 function _data_arrays(f::MOI.ScalarNonlinearFunction)
     return reduce(vcat, _data_arrays.(f.args); init = _data_arrays(nothing))
 end
 
 _arrays(::Any) = GenOpt.ContiguousArrayOfVariables[]
 _arrays(a::GenOpt.ContiguousArrayOfVariables) = [a]
+function _arrays(
+    f::Union{
+        GenOpt.PolynomialFunction,
+        GenOpt.SumGenerator,
+        GenOpt.FilteredSumGenerator,
+    },
+)
+    return _arrays(f.func)
+end
 function _arrays(f::MOI.ScalarNonlinearFunction)
     return reduce(vcat, _arrays.(f.args); init = _arrays(nothing))
 end
@@ -205,7 +268,7 @@ function test_lazy_sum_promotion()
     JuMP.@variable(model, x[1:3])
     s = GenOpt.lazy_sum(x[j] for j in 1:3)
     @test GenOpt.MA.promote_operation(+, JuMP.AffExpr, typeof(s)) ==
-          JuMP.GenericNonlinearExpr{JuMP.VariableRef}
+          GenOpt.PolynomialExpr{JuMP.AffExpr,JuMP.VariableRef}
     return
 end
 
@@ -366,20 +429,198 @@ function test_lazy_sum_sum()
     @test b isa GenOpt.LazySum{JuMP.AffExpr,JuMP.VariableRef}
     JuMP.@objective(model, Min, a + b)
     F = MOI.get(model, MOI.ObjectiveFunctionType())
-    @test F == MOI.ScalarNonlinearFunction
-    func = MOI.get(model, MOI.ObjectiveFunction{F}())
+    @test F == GenOpt.PolynomialFunction{MOI.ScalarQuadraticFunction{Float64}}
+    func = MOI.get(model, MOI.ObjectiveFunction{F}()).func
     @test func.head == :+
-    @test func.args[1] isa SumGenerator{MOI.ScalarQuadraticFunction{Float64}}
-    @test func.args[2] isa SumGenerator{MOI.ScalarAffineFunction{Float64}}
+    @test only(func.args[1].func.args) isa
+          SumGenerator{MOI.ScalarQuadraticFunction{Float64}}
+    @test only(func.args[2].func.args) isa
+          SumGenerator{MOI.ScalarAffineFunction{Float64}}
     return
 end
 
 _has_filtered_sum(x) =
     if x isa MOI.ScalarNonlinearFunction
         any(_has_filtered_sum, x.args)
+    elseif x isa GenOpt.PolynomialFunction
+        _has_filtered_sum(x.func)
     else
         x isa GenOpt.FilteredSumGenerator
     end
+
+_has_sum(::Any) = false
+_has_sum(::Union{GenOpt.SumGenerator,GenOpt.FilteredSumGenerator}) = true
+_has_sum(f::GenOpt.PolynomialFunction) = _has_sum(f.func)
+_has_sum(f::MOI.ScalarNonlinearFunction) = any(_has_sum, f.args)
+
+function test_polynomial_lazy_sum_targets()
+    for T in (Float32, Float64)
+        model = JuMP.GenericModel{T}()
+        JuMP.@variable(model, x[1:3])
+        for (sum, F) in (
+            (GenOpt.lazy_sum(x[i] for i in 1:3), MOI.ScalarAffineFunction{T}),
+            (
+                GenOpt.lazy_sum(2x[i] + 1 for i in 1:3),
+                MOI.ScalarAffineFunction{T},
+            ),
+            (
+                GenOpt.lazy_sum(x[i]^2 for i in 1:3),
+                MOI.ScalarQuadraticFunction{T},
+            ),
+            (
+                GenOpt.lazy_sum(x[i] for i in 1:3 if i == 2),
+                MOI.ScalarAffineFunction{T},
+            ),
+        )
+            polynomial = @inferred JuMP.moi_function(sum)
+            @test polynomial isa GenOpt.PolynomialFunction{F}
+            @test (@inferred MOI.constant(polynomial)) === zero(T)
+            @test JuMP.moi_function_type(typeof(sum)) == typeof(polynomial)
+            @test only(polynomial.func.args).iterators === sum.iterators
+            @test _has_sum(polynomial)
+        end
+        nonlinear = GenOpt.lazy_sum(sin(x[i]) for i in 1:3)
+        @test JuMP.moi_function(nonlinear) isa
+              GenOpt.SumGenerator{MOI.ScalarNonlinearFunction}
+        @test JuMP.moi_function_type(typeof(nonlinear)) ==
+              typeof(JuMP.moi_function(nonlinear))
+    end
+    return
+end
+
+function test_polynomial_scalar_arithmetic()
+    for T in (Float32, Float64)
+        model = JuMP.GenericModel{T}()
+        JuMP.@variable(model, x[1:3])
+        sum = GenOpt.lazy_sum(x[i] for i in 1:3)
+        quadratic = GenOpt.lazy_sum(x[i]^2 for i in 1:3)
+        for (expression, F) in (
+            (sum + x[1], MOI.ScalarAffineFunction{T}),
+            (x[1] + sum, MOI.ScalarAffineFunction{T}),
+            (sum - 1, MOI.ScalarAffineFunction{T}),
+            (1 - sum, MOI.ScalarAffineFunction{T}),
+            (sum * 2, MOI.ScalarAffineFunction{T}),
+            (2 * sum, MOI.ScalarAffineFunction{T}),
+            (sum / 2, MOI.ScalarAffineFunction{T}),
+            (sum + sum, MOI.ScalarAffineFunction{T}),
+            (sum * x[1], MOI.ScalarQuadraticFunction{T}),
+            (sum * sum, MOI.ScalarQuadraticFunction{T}),
+            (sum^1, MOI.ScalarAffineFunction{T}),
+            (sum^2, MOI.ScalarQuadraticFunction{T}),
+            (quadratic + sum, MOI.ScalarQuadraticFunction{T}),
+            ((sum + 1) * x[1], MOI.ScalarQuadraticFunction{T}),
+        )
+            @test expression isa GenOpt.PolynomialExpr
+            @test JuMP.variable_ref_type(expression) == typeof(x[1])
+            @test JuMP.moi_function(expression) isa GenOpt.PolynomialFunction{F}
+            @test JuMP.moi_function_type(typeof(expression)) ==
+                  typeof(JuMP.moi_function(expression))
+            @test _has_sum(JuMP.moi_function(expression))
+        end
+        for nonlinear in
+            (sin(sum), sum^3, sum^x[1], quadratic * x[1], sum / x[1], ℯ^sum)
+            @test nonlinear isa JuMP.GenericNonlinearExpr
+            @test JuMP.moi_function(nonlinear) isa MOI.ScalarNonlinearFunction
+        end
+        macro_expression = JuMP.@expression(model, 2sum + x[1])
+        @test macro_expression isa GenOpt.PolynomialExpr
+        i = GenOpt.iterator([1, 2])
+        V = typeof(x[1])
+        @test (sum + x[i]) isa GenOpt.ExprTemplate{JuMP.GenericAffExpr{T,V},V}
+        @test (sum * i) isa GenOpt.ExprTemplate{JuMP.GenericAffExpr{T,V},V}
+        @test (sum * x[i]) isa GenOpt.ExprTemplate{JuMP.GenericQuadExpr{T,V},V}
+        @test (x[i] * (sum + 1)) isa
+              GenOpt.ExprTemplate{JuMP.GenericQuadExpr{T,V},V}
+        for op in (+, -, *)
+            @test GenOpt.MA.promote_operation(
+                op,
+                typeof(sum),
+                typeof(sin(x[1])),
+            ) == JuMP.GenericNonlinearExpr{V}
+            @test GenOpt.MA.promote_operation(
+                op,
+                typeof(sin(x[1])),
+                typeof(sum),
+            ) == JuMP.GenericNonlinearExpr{V}
+            @test GenOpt.MA.promote_operation(op, Int, typeof(sum)) ==
+                  typeof(op(1, sum))
+            @test GenOpt.MA.promote_operation(op, typeof(sum), Int) ==
+                  typeof(op(sum, 1))
+        end
+        @test GenOpt.MA.promote_operation(*, typeof(quadratic), typeof(x[1])) ==
+              JuMP.GenericNonlinearExpr{V}
+    end
+    return
+end
+
+function test_polynomial_function_utilities()
+    x = MOI.VariableIndex(1)
+    f = GenOpt.PolynomialFunction{MOI.ScalarAffineFunction{Float64}}(
+        MOI.ScalarNonlinearFunction(:+, Any[x, 2.0]),
+    )
+    copied = copy(f)
+    @test copied ≈ f
+    @test copied.func !== f.func
+    @test MOI.Utilities.is_canonical(f)
+    @test MOI.Utilities.canonicalize!(copied) === copied
+    @test MOI.constant(f, Float32) === 0.0f0
+    mapped = MOI.Utilities.map_indices(v -> MOI.VariableIndex(v.value + 1), f)
+    @test mapped.func.args[1] == MOI.VariableIndex(2)
+    @test f.func.args[1] == x
+    return
+end
+
+function test_polynomial_numeric_placeholder_promotion()
+    model = JuMP.GenericModel{Float32}()
+    JuMP.@variable(model, x)
+    numeric = GenOpt.lazy_sum(i + 1 for i in 1:3)
+    for constant in (numeric, numeric + 1)
+        for expression in
+            (constant + x, x + constant, constant * x, x * constant)
+            @test expression isa GenOpt.PolynomialExpr{
+                JuMP.GenericAffExpr{Float32,typeof(x)},
+                typeof(x),
+            }
+            @test JuMP.moi_function(expression) isa
+                  GenOpt.PolynomialFunction{MOI.ScalarAffineFunction{Float32}}
+        end
+        @test GenOpt.MA.promote_operation(+, typeof(constant), typeof(x)) ==
+              typeof(constant + x)
+        @test GenOpt.MA.promote_operation(*, typeof(x), typeof(constant)) ==
+              typeof(x * constant)
+    end
+    return
+end
+
+function test_polynomial_sum_function_roundtrip()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:3])
+    for sum in (
+        GenOpt.lazy_sum(x[i] for i in 1:3),
+        GenOpt.lazy_sum(x[i] for i in 1:3 if i == 2),
+    )
+        f = JuMP.moi_function(sum)
+        reconstructed = JuMP.jump_function(model, f)
+        @test typeof(reconstructed) == JuMP.jump_function_type(model, typeof(f))
+        @test JuMP.moi_function_type(typeof(reconstructed)) == typeof(f)
+        @test _has_sum(JuMP.moi_function(reconstructed))
+        @test copy(f) ≈ f
+        @test MOI.Utilities.map_indices(identity, f) ≈ f
+        @test JuMP.owner_model(reconstructed) === JuMP.owner_model(sum)
+        @test JuMP.owner_model(reconstructed + x[1]) === model
+        @test JuMP.check_belongs_to_model(reconstructed, model) === nothing
+        @test_throws JuMP.VariableNotOwned JuMP.check_belongs_to_model(
+            reconstructed,
+            JuMP.Model(),
+        )
+        if sum isa GenOpt.LazySum
+            @test !isempty(
+                JuMP.function_string(MIME("text/plain"), reconstructed),
+            )
+        end
+    end
+    return
+end
 
 # Integration test for a filtered `lazy_sum` used inside a constraint of a JuMP model.
 #

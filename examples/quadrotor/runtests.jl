@@ -77,12 +77,26 @@ end
 @testset "objective keeps its generators" begin
     b = JuMP.backend(model)
     F = MOI.get(b, MOI.ObjectiveFunctionType())
-    @test F == MOI.ScalarNonlinearFunction
-    obj = MOI.get(b, MOI.ObjectiveFunction{F}())
+    @test F == PolynomialFunction{MOI.ScalarQuadraticFunction{Float64}}
+    obj = MOI.get(b, MOI.ObjectiveFunction{F}()).func
     # The three `lazy_sum` terms are summed without being expanded.
     @test obj.head == :+
-    @test all(a -> a isa SumGenerator, obj.args)
-    terms = [prod(it -> length(it.values), a.iterators) for a in obj.args]
+    # Additions may be nested, with polynomial degree tags around each sum.
+    pending = Any[obj]
+    sums = SumGenerator{MOI.ScalarQuadraticFunction{Float64}}[]
+    while !isempty(pending)
+        arg = pop!(pending)
+        if arg isa PolynomialFunction
+            push!(pending, arg.func)
+        elseif arg isa MOI.ScalarNonlinearFunction
+            @test arg.head == :+
+            append!(pending, arg.args)
+        else
+            @test arg isa SumGenerator{MOI.ScalarQuadraticFunction{Float64}}
+            push!(sums, arg)
+        end
+    end
+    terms = [prod(it -> length(it.values), a.iterators) for a in sums]
     # `N * p` control terms, `N * n` stage terms and `n` terminal terms.
     # Older JuMP versions may reorder terms when flattening the objective sum.
     @test sort(terms) == sort([N * 4, N * n, n])
