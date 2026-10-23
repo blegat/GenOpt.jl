@@ -46,9 +46,10 @@ function JuMP.check_belongs_to_model(f::ExprTemplate, model::JuMP.AbstractModel)
 end
 
 """
-    struct IteratorValues{I}
-        iterator::Iterator
-        values::I
+    struct IteratorValues{T}
+        iterators::Iterators
+        index::IteratorIndex
+        value_index::Int
     end
 
 Mapped values for `iterator`. The values at `i`th position
@@ -77,10 +78,21 @@ julia> 2v + 1
 iterator([5, -5])
 ```
 """
-struct IteratorValues
+struct IteratorValues{T}
     iterators::Iterators
     index::IteratorIndex
     value_index::Int
+end
+
+function _iterator_value_type(values::Vector{T}, index::Int) where {T}
+    # Preserve the selected value's type, even for abstract tuple fields.
+    # Empty domains have no first value, so use their declared field type.
+    return isempty(values) ? fieldtype(T, index) : typeof(first(values)[index])
+end
+
+function IteratorValues(iterators::Iterators, index::IteratorIndex, column::Int)
+    T = _iterator_value_type(iterators[index.value].values, column)
+    return IteratorValues{T}(iterators, index, column)
 end
 
 function Base.show(io::IO, i::IteratorValues)
@@ -99,8 +111,13 @@ function _tuple(axe)
 end
 
 function iterators(axes)
-    iterators = Iterator[Iterator(_tuple(axe)) for axe in axes]
-    return IteratorValues.(Ref(iterators), IteratorIndex.(eachindex(axes)), 1)
+    iterators = Iterator[]
+    return map(eachindex(axes)) do index
+        iterator = Iterator(_tuple(axes[index]))
+        push!(iterators, iterator)
+        T = _iterator_value_type(iterator.values, 1)
+        return IteratorValues{T}(iterators, IteratorIndex(index), 1)
+    end
 end
 
 iterator(axe) = iterators([axe])[]
@@ -108,7 +125,7 @@ iterator(axe) = iterators([axe])[]
 # The following is intentionally kept close to JuMP/src/nlp_expr.jl
 const _ScalarWithIterator = Union{ExprTemplate,IteratorValues}
 
-function _univariate(f, op, x)
+function _univariate(f::F, op, x) where {F}
     V = something(
         _variable_ref_type(x),
         JuMP.VariableRef, # FIXME needed if `x` is an iterator
@@ -134,7 +151,8 @@ end
 function prepare(it::IteratorValues)
     return JuMP.GenericNonlinearExpr{JuMP.VariableRef}(
         :getindex,
-        Any[it.index, it.value_index],
+        it.index,
+        it.value_index,
     )
 end
 
@@ -144,6 +162,8 @@ _expr(f::ExprTemplate) = f.expr
 _expr(f::Number) = f
 
 _variable_ref_type(f::JuMP.AbstractJuMPScalar) = JuMP.variable_ref_type(f)
+# Numeric templates have no variables: their default V is only a placeholder.
+_variable_ref_type(::ExprTemplate{<:Number}) = nothing
 _variable_ref_type(::IteratorValues) = nothing
 _variable_ref_type(::Number) = nothing
 
@@ -151,9 +171,7 @@ _iterators(::JuMP.AbstractJuMPScalar) = nothing
 _iterators(it::_ScalarWithIterator) = it.iterators
 _iterators(::Number) = nothing
 
-function _type(it::IteratorValues)
-    return typeof(first(it.iterators[it.index.value].values)[it.value_index])
-end
+_type(::IteratorValues{T}) where {T} = T
 _type(::ExprTemplate{E}) where {E} = E
 _type(f::JuMP.AbstractJuMPScalar) = typeof(f)
 _type(f::Number) = typeof(f)
@@ -211,7 +229,7 @@ function _merge_exprs(x, y)
     iterators
 end
 
-function _multivariate(f, op, x, y)
+function _multivariate(f::F, op, x, y) where {F}
     V = something(
         _variable_ref_type(x),
         _variable_ref_type(y),

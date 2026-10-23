@@ -35,6 +35,58 @@ function _eq(a::JuMP.AbstractJuMPScalar, b::JuMP.AbstractJuMPScalar)
     return JuMP.isequal_canonical(a, b)
 end
 
+function test_iterator_value_type()
+    i = GenOpt.iterator([3, 1])
+    @test i isa IteratorValues{Int}
+    @test (@inferred GenOpt._type(i)) === Int
+    expr = GenOpt.prepare(i)
+    @test expr.head == :getindex
+    @test expr.args == Any[i.index, i.value_index]
+    original = i.iterators[1]
+    values = Float32[1, 2, 3][i]
+    @test values isa IteratorValues{Float32}
+    @test (@inferred GenOpt._type(values)) === Float32
+    @test (@inferred GenOpt._type(i)) === Int
+    @test values.iterators === i.iterators
+    @test values.iterators[1].identity === original.identity
+    @test length(first(values.iterators[1].values)) ==
+          length(first(original.values)) + 1
+    _test_iterator(values, Float32[3, 1])
+    reconstructed = IteratorValues(i.iterators, i.index, i.value_index)
+    @test reconstructed isa IteratorValues{Int}
+    @test reconstructed.iterators === i.iterators
+    tuples = GenOpt.iterator([(1, :a), (2, :b)])
+    @test tuples isa IteratorValues{Int}
+    @test tuples[2] isa IteratorValues{Symbol}
+    @test GenOpt.iterator(Real[1, 2.0]) isa IteratorValues{Int}
+    empty_iterator = GenOpt.iterator(Int[])
+    @test empty_iterator isa IteratorValues{Int}
+    @test (@inferred GenOpt._type(empty_iterator)) === Int
+    @test isempty(empty_iterator.iterators[1].values)
+    return
+end
+
+function test_numeric_template_variable_type()
+    model = JuMP.GenericModel{Float32}()
+    x = JuMP.@variable(model, [1:3])
+    V = eltype(x)
+    i = GenOpt.iterator([0, 1, 2])
+    index = i + 1
+    variables = x[index]
+    @test GenOpt._variable_ref_type(index) === nothing
+    @test JuMP.variable_ref_type(variables) === V
+    for expression in (index * variables, variables * index)
+        @test expression isa ExprTemplate{JuMP.GenericAffExpr{Float32,V},V}
+    end
+    # Reusing the numeric expression as an index must keep the model's V.
+    @test JuMP.variable_ref_type(x[index]) === V
+    @test JuMP.variable_ref_type(x[index+1]) === V
+    for expression in (index + variables, variables + index)
+        @test expression isa ExprTemplate{JuMP.GenericAffExpr{Float32,V},V}
+    end
+    return
+end
+
 function _test_template(et, values)
     @test et isa ExprTemplate
     for i in eachindex(values)
