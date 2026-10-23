@@ -200,6 +200,143 @@ end
 _expand(idx::IteratorIndex, values) = values[idx.value]
 _expand(x, _) = x  # constants, MOI.VariableIndex, etc.
 
+# These leaves arrive through Vector{Any}. Keep boxed helpers generic so a
+# trimmed image does not need new leaf-type specializations at runtime.
+Base.@nospecializeinfer function _expand(
+    @nospecialize(func::PolynomialFunction),
+    values,
+)
+    return _expand(func.func, values)
+end
+
+const _AnySumGenerator = Union{SumGenerator,FilteredSumGenerator}
+
+Base.@nospecializeinfer function _sum_filter(
+    @nospecialize(func::SumGenerator),
+    _,
+)
+    return true
+end
+Base.@nospecializeinfer function _sum_filter(
+    @nospecialize(func::FilteredSumGenerator),
+    values,
+)::Bool
+    return _expand_filter(func.filter, values, func.iterators)
+end
+
+_expand_filter(value, values) = _expand(value, values)
+
+function _filter_iterator_position(value, iterators)::Int
+    source = value.iterators[value.index.value]
+    for k in eachindex(iterators)
+        if iterators[k].identity === source.identity
+            return k
+        end
+    end
+    return throw(
+        ArgumentError(
+            "Correlated lazy-sum filters are not supported: " *
+            "a filter iterator is outside the sum's domain",
+        ),
+    )
+end
+
+function _check_filter_scope(value, iterators)
+    if value isa IteratorValues
+        _filter_iterator_position(value, iterators)
+    elseif value isa _Filtered
+        _check_filter_scope(value.iterator, iterators)
+    elseif value isa FilterExpression
+        for arg in value.args
+            _check_filter_scope(arg, iterators)
+        end
+    end
+    return
+end
+
+Base.@nospecializeinfer function _check_sum_filter(
+    @nospecialize(func::SumGenerator)
+)
+    return
+end
+Base.@nospecializeinfer function _check_sum_filter(
+    @nospecialize(func::FilteredSumGenerator)
+)
+    return _check_filter_scope(func.filter, func.iterators)
+end
+
+function _expand_filter(value, values, iterators)
+    iterators === nothing && return _expand_filter(value, values)
+    if value isa IteratorValues
+        position = _filter_iterator_position(value, iterators)
+        return values[position][value.value_index]
+    elseif value isa _Filtered
+        return _expand_filter(value.iterator, values, iterators)
+    end
+    return _expand_filter(value, values)
+end
+
+function _expand_filter(filter::FilterExpression, values, iterators = nothing)
+    if filter.head === :(==) && length(filter.args) == 2
+        return _expand_filter(filter.args[1], values, iterators) ==
+               _expand_filter(filter.args[2], values, iterators)
+    end
+    args = map(arg -> _expand_filter(arg, values, iterators), filter.args)
+    return getfield(Base, filter.head)(args...)
+end
+
+# Each sum owns its IteratorIndex scope. Allocate its scratch arrays once,
+# not once per term, and never overwrite values belonging to an outer sum.
+# A callback returning false stops the traversal early.
+Base.@nospecializeinfer function _foreach_sum_term(
+    f::F,
+    @nospecialize(func::_AnySumGenerator)
+)::Bool where {F}
+    _check_sum_filter(func)
+    sizes = length.(func.iterators)
+    nit = length(func.iterators)
+    positions = ones(Int, nit)
+    values = Vector{Any}(undef, nit)
+    for _ in 1:prod(sizes)
+        for k in 1:nit
+            values[k] = @inbounds @inline getindex(
+                func.iterators[k].values,
+                positions[k],
+            )
+        end
+        if _sum_filter(func, values) && !f(func.func, values)
+            return false
+        end
+        for k in 1:nit
+            positions[k] += 1
+            if positions[k] <= sizes[k]
+                break
+            end
+            positions[k] = 1
+        end
+    end
+    return true
+end
+
+# The normal affine/quadratic walkers accumulate sums directly. This general
+# expansion remains for their uncommon conversion and constant-folding paths.
+Base.@nospecializeinfer function _expand(
+    @nospecialize(func::_AnySumGenerator),
+    _,
+)
+    args = Any[]
+    _foreach_sum_term(func) do term, values
+        push!(args, _expand(term, values))
+        return true
+    end
+    if isempty(args)
+        return 0
+    elseif all(_is_numeric, args)
+        return _eval_op(:+, args)
+    end
+    return MOI.ScalarNonlinearFunction(:+, args)
+end
+
 _is_numeric(::Number) = true
 _is_numeric(_) = false
 
@@ -308,6 +445,30 @@ macro _expand_recurse(kind, out, arg, values, coef, T)
     return Expr(:block, __source__, body)
 end
 
+Base.@nospecializeinfer function _expand_affine_sum!(
+    out::MOI.ScalarAffineFunction{T},
+    @nospecialize(func::_AnySumGenerator),
+    coef::T,
+) where {T}
+    _foreach_sum_term(func) do term, values
+        _expand_affine!(out, term, values, coef)
+        return true
+    end
+    return
+end
+
+Base.@nospecializeinfer function _expand_quadratic_sum!(
+    out::MOI.ScalarQuadraticFunction{T},
+    @nospecialize(func::_AnySumGenerator),
+    coef::T,
+) where {T}
+    _foreach_sum_term(func) do term, values
+        _expand_quadratic!(out, term, values, coef)
+        return true
+    end
+    return
+end
+
 # Entry point. `arg` is typically read out of `Vector{Any}` (so its static
 # type is `Any`). Multi-method dispatch on `arg` would pay a per-call
 # allocation for the dispatch tuple; using a single method with a manual
@@ -365,6 +526,20 @@ function _expand_affine_snf!(
             return
         end
         _expand_affine_fallback!(out, expr, values, coef)
+    elseif h === :/ && length(args) == 2
+        denominator = args[2]
+        constant = @_try_const T denominator values
+        if constant !== nothing
+            new_coef = convert(T, coef / constant)
+            numerator = args[1]
+            @_expand_recurse affine out numerator values new_coef T
+            return
+        end
+        _expand_affine_fallback!(out, expr, values, coef)
+    elseif h === :^ && length(args) == 2 && _is_unit_exponent(args[2])
+        base = args[1]
+        @_expand_recurse affine out base values coef T
+        return
     elseif h === :getindex
         _expand_getindex_affine!(out, args, values, coef)
         return
@@ -380,12 +555,19 @@ end
 
 # Keep uncommon forms (including embedded MOI polynomials) out of the
 # allocation-free walker. Conversion still rejects non-affine expressions.
-function _expand_affine_fallback!(
+Base.@nospecializeinfer function _expand_affine_fallback!(
     out::MOI.ScalarAffineFunction{T},
-    expr,
+    @nospecialize(expr),
     values,
     coef::T,
 ) where {T}
+    if expr isa PolynomialFunction
+        _expand_affine_snf!(out, expr.func, values, coef)
+        return
+    elseif expr isa _AnySumGenerator
+        _expand_affine_sum!(out, expr, coef)
+        return
+    end
     f = convert(MOI.ScalarAffineFunction{T}, _expand(expr, values))
     for term in f.terms
         push!(
@@ -630,7 +812,17 @@ Base.@nospecializeinfer function _eval_index(@nospecialize(x), values)::Float64
             # `:getindex` nodes here so index expressions like `k + 1` work
             # under the JuMP-built path.
             coll = args[1]
-            v = _expand(coll, values)
+            # Keep bound-iterator access visible to a trimmed image instead
+            # of dispatching `_expand` on the erased collection argument.
+            v = if coll isa IteratorIndex
+                value = values[coll.value]
+                while value isa IteratorIndex
+                    value = values[value.value]
+                end
+                value
+            else
+                _expand(coll, values)
+            end
             if n == 2
                 return _float_index(
                     _iterator_component(v, _to_int(args[2], values)),
@@ -734,17 +926,38 @@ end
     if _contains_variable(expr, values)
         return nothing
     end
+    if expr isa _AnySumGenerator
+        # Fold numeric sums in the target coefficient type. `_eval_op`
+        # would first float integer data, losing large-integer precision.
+        out = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
+        _expand_affine_sum!(out, expr, one(T))
+        return isempty(out.terms) ? out.constant : nothing
+    end
     value = _expand(expr, values)
     return value isa Number ? T(value) : nothing
 end
 
 # This check is deliberately conservative: an unrecognized variable lookup
 # may reach the general folder, but a known variable cannot be a constant.
-Base.@nospecializeinfer function _contains_variable(@nospecialize(expr), values)
+Base.@nospecializeinfer @inline function _contains_variable(
+    @nospecialize(expr),
+    values,
+)::Bool
     if expr isa MOI.VariableIndex
         return true
     elseif expr isa IteratorIndex
         return _contains_variable(values[expr.value], values)
+    elseif expr isa PolynomialFunction
+        return _contains_variable(expr.func, values)
+    elseif expr isa _AnySumGenerator
+        is_constant = _foreach_sum_term(expr) do term, sum_values
+            return !_contains_variable(term, sum_values)
+        end
+        return !is_constant
+    elseif expr isa MOI.ScalarAffineFunction
+        return !isempty(expr.terms)
+    elseif expr isa MOI.ScalarQuadraticFunction
+        return !isempty(expr.affine_terms) || !isempty(expr.quadratic_terms)
     elseif expr isa MOI.ScalarNonlinearFunction
         if expr.head === :getindex &&
            expr.args[1] isa ContiguousArrayOfVariables
@@ -829,6 +1042,20 @@ function _expand_quadratic_snf!(
         @_expand_recurse affine saf2 a2 values unit T
         _accumulate_product!(out, saf1, saf2, coef)
         return
+    elseif h === :/ && length(args) == 2
+        denominator = args[2]
+        constant = @_try_const T denominator values
+        if constant !== nothing
+            new_coef = convert(T, coef / constant)
+            numerator = args[1]
+            @_expand_recurse quadratic out numerator values new_coef T
+            return
+        end
+        _expand_quadratic_fallback!(out, expr, values, coef)
+    elseif h === :^ && length(args) == 2 && _is_unit_exponent(args[2])
+        base = args[1]
+        @_expand_recurse quadratic out base values coef T
+        return
     elseif h === :^ && length(args) == 2 && _is_square_exponent(args[2])
         saf = MOI.ScalarAffineFunction(MOI.ScalarAffineTerm{T}[], zero(T))
         unit = one(T)
@@ -884,20 +1111,43 @@ function _expand_quadratic_snf!(
     end
 end
 
-@inline function _is_square_exponent(value)
-    # The exponent is read from Vector{Any}; expose the literal integer case.
+@inline function _is_unit_exponent(value)
+    # Exponents come from Vector{Any}. Narrow before comparison so a trimmed
+    # image retains primitive comparisons rather than dispatching on Real.
     if value isa Int
-        return value == 2
+        return value == 1
+    elseif value isa Float64
+        return value == 1.0
+    elseif value isa Float32
+        return value == 1.0f0
     end
-    return value == 2
+    return value isa Real && value == 1
 end
 
-function _expand_quadratic_fallback!(
+@inline function _is_square_exponent(value)
+    if value isa Int
+        return value == 2
+    elseif value isa Float64
+        return value == 2.0
+    elseif value isa Float32
+        return value == 2.0f0
+    end
+    return value isa Real && value == 2
+end
+
+Base.@nospecializeinfer function _expand_quadratic_fallback!(
     out::MOI.ScalarQuadraticFunction{T},
-    expr,
+    @nospecialize(expr),
     values,
     coef::T,
 ) where {T}
+    if expr isa PolynomialFunction
+        _expand_quadratic_snf!(out, expr.func, values, coef)
+        return
+    elseif expr isa _AnySumGenerator
+        _expand_quadratic_sum!(out, expr, coef)
+        return
+    end
     f = convert(MOI.ScalarQuadraticFunction{T}, _expand(expr, values))
     for term in f.quadratic_terms
         push!(

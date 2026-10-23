@@ -324,12 +324,10 @@ end
 
 const _AnyLazySum{E,V} = Union{LazySum{E,V},FilteredLazySum{E,V}}
 
-function Base.:-(sum::_AnyLazySum{E,V}) where {E,V}
-    return JuMP.GenericNonlinearExpr{V}(:-, Any[sum])
-end
-
 JuMP._is_real(::_AnyLazySum) = true
 JuMP.variable_ref_type(s::_AnyLazySum) = JuMP.variable_ref_type(s.expr)
+JuMP.variable_ref_type(::Type{<:_AnyLazySum{E,V}}) where {E,V} = V
+_variable_ref_type(::_AnyLazySum{<:Real}) = nothing
 
 # `JuMP.:+(::AbstractJuMPScalar, ::AbstractJuMPScalar)` calls `iszero` which
 # defaults to `x == zero(x)`. A `LazySum` is never simplified away so we
@@ -341,31 +339,19 @@ function JuMP.check_belongs_to_model(s::_AnyLazySum, model::JuMP.AbstractModel)
     return _check_belongs_to_model(s.expr, model)
 end
 
-function MA.promote_operation(
-    ::Union{typeof(+),typeof(-),typeof(*),MA.AddSubMul},
-    ::Type{<:JuMP._GenericAffOrQuadExpr{T,V}},
-    ::Type{<:_AnyLazySum{E,V}},
-) where {T,E,V}
-    return JuMP.GenericNonlinearExpr{V}
-end
-
 _sum_function_type(::Type{E}) where {E} = JuMP.moi_function_type(E)
 
-# A numeric template has no MOI numeric function type. Preserve its nonlinear
-# representation without choosing a coefficient type for the resulting sum.
+# Numeric summands have no standalone MOI numeric function type. Keep their
+# raw template nonlinear; the outer polynomial tag supplies a coefficient type.
 function _sum_function_type(::Type{E}) where {E<:Real}
     return MOI.ScalarNonlinearFunction
 end
 
-function JuMP.moi_function(s::LazySum{E}) where {E}
+function _raw_moi_function(s::LazySum{E}) where {E}
     return SumGenerator{_sum_function_type(E)}(
         JuMP.moi_function(s.expr),
         s.iterators,
     )
-end
-
-function JuMP.moi_function_type(::Type{LazySum{E,V}}) where {E,V}
-    return SumGenerator{_sum_function_type(E)}
 end
 
 function JuMP.jump_function_type(
@@ -378,16 +364,19 @@ function JuMP.jump_function_type(
     }
 end
 
-function JuMP.moi_function(s::FilteredLazySum{E}) where {E}
+function JuMP.jump_function(model, f::SumGenerator{F}) where {F}
+    E = JuMP.jump_function_type(model, F)
+    return LazySum(
+        ExprTemplate{E}(JuMP.jump_function(model, f.func), f.iterators),
+    )
+end
+
+function _raw_moi_function(s::FilteredLazySum{E}) where {E}
     return FilteredSumGenerator{_sum_function_type(E)}(
         JuMP.moi_function(s.expr),
         s.iterators,
         s.filter,
     )
-end
-
-function JuMP.moi_function_type(::Type{FilteredLazySum{E,V}}) where {E,V}
-    return FilteredSumGenerator{_sum_function_type(E)}
 end
 
 function JuMP.jump_function_type(
@@ -398,6 +387,247 @@ function JuMP.jump_function_type(
         JuMP.jump_function_type(model, F),
         JuMP.variable_ref_type(model),
     }
+end
+
+function JuMP.jump_function(model, f::FilteredSumGenerator{F}) where {F}
+    E = JuMP.jump_function_type(model, F)
+    template = ExprTemplate{E}(JuMP.jump_function(model, f.func), f.iterators)
+    return FilteredLazySum(template, f.filter)
+end
+
+_polynomial_target_type(::Type, ::Type) = nothing
+function _polynomial_target_type(
+    ::Type{E},
+    ::Type{V},
+) where {E<:Union{Real,JuMP.AbstractVariableRef},V}
+    return MOI.ScalarAffineFunction{JuMP.value_type(V)}
+end
+function _polynomial_target_type(
+    ::Type{E},
+    ::Type,
+) where {E<:JuMP._GenericAffOrQuadExpr}
+    return JuMP.moi_function_type(E)
+end
+
+function JuMP.moi_function(s::_AnyLazySum{E,V}) where {E,V}
+    raw = _raw_moi_function(s)
+    F = _polynomial_target_type(E, V)
+    if F === nothing
+        return raw
+    end
+    return PolynomialFunction{F}(MOI.ScalarNonlinearFunction(:+, Any[raw]))
+end
+
+function JuMP.moi_function_type(::Type{LazySum{E,V}}) where {E,V}
+    F = _polynomial_target_type(E, V)
+    return F === nothing ? SumGenerator{_sum_function_type(E)} :
+           PolynomialFunction{F}
+end
+
+function JuMP.moi_function_type(::Type{FilteredLazySum{E,V}}) where {E,V}
+    F = _polynomial_target_type(E, V)
+    return F === nothing ? FilteredSumGenerator{_sum_function_type(E)} :
+           PolynomialFunction{F}
+end
+
+"""
+    PolynomialExpr{E,V}
+
+A scalar expression whose structured nonlinear tree is known to have the
+polynomial degree represented by JuMP expression type `E`.
+"""
+struct PolynomialExpr{E,V<:JuMP.AbstractVariableRef} <: JuMP.AbstractJuMPScalar
+    expr::JuMP.GenericNonlinearExpr{V}
+end
+
+function PolynomialExpr{E}(expr::JuMP.GenericNonlinearExpr{V}) where {E,V}
+    return PolynomialExpr{E,V}(expr)
+end
+
+const _StructuredScalar = Union{_AnyLazySum,PolynomialExpr}
+
+_type(::Type{<:_AnyLazySum{E}}) where {E} = E
+_type(::Type{<:PolynomialExpr{E}}) where {E} = E
+_type(::Type{E}) where {E} = E
+_type(::PolynomialExpr{E}) where {E} = E
+_type(::_AnyLazySum{E}) where {E} = E
+_expr(f::PolynomialExpr) = f.expr
+_variable_ref_type(::PolynomialExpr{<:Real}) = nothing
+JuMP.variable_ref_type(::Type{PolynomialExpr{E,V}}) where {E,V} = V
+JuMP._is_real(::PolynomialExpr) = true
+Base.iszero(::PolynomialExpr) = false
+JuMP.owner_model(f::PolynomialExpr) = JuMP.owner_model(f.expr)
+function JuMP.check_belongs_to_model(
+    f::PolynomialExpr,
+    model::JuMP.AbstractModel,
+)
+    return JuMP.check_belongs_to_model(f.expr, model)
+end
+function JuMP.function_string(mime, f::PolynomialExpr)
+    return JuMP.function_string(mime, f.expr)
+end
+
+function JuMP.moi_function(f::PolynomialExpr{E,V}) where {E,V}
+    return PolynomialFunction{_polynomial_target_type(E, V)}(
+        JuMP.moi_function(f.expr),
+    )
+end
+function JuMP.moi_function_type(::Type{PolynomialExpr{E,V}}) where {E,V}
+    return PolynomialFunction{_polynomial_target_type(E, V)}
+end
+function JuMP.jump_function_type(model, ::Type{PolynomialFunction{F}}) where {F}
+    return PolynomialExpr{
+        JuMP.jump_function_type(model, F),
+        JuMP.variable_ref_type(model),
+    }
+end
+function JuMP.jump_function(model, f::PolynomialFunction{F}) where {F}
+    return PolynomialExpr{JuMP.jump_function_type(model, F)}(
+        JuMP.jump_function(model, f.func),
+    )
+end
+
+function _structured_result(
+    ::Type{E},
+    expr::JuMP.GenericNonlinearExpr{V},
+) where {E,V}
+    if _polynomial_target_type(E, V) === nothing
+        return expr
+    end
+    return PolynomialExpr{E,V}(expr)
+end
+
+function _structured_univariate(f::F, op, x) where {F}
+    V = JuMP.variable_ref_type(x)
+    expr = JuMP.GenericNonlinearExpr{V}(op, _expr(x))
+    if op === :-
+        return _structured_result(MA.promote_operation(-, _type(x)), expr)
+    end
+    return expr
+end
+
+function _structured_multivariate(f::F, op, x, y) where {F}
+    V = something(
+        _variable_ref_type(x),
+        _variable_ref_type(y),
+        JuMP.VariableRef,
+    )
+    T = JuMP.value_type(V)
+    a, b = _expr(x), _expr(y)
+    a = a isa Real ? convert(T, a) : a
+    b = b isa Real && op !== :^ ? convert(T, b) : b
+    expr = JuMP.GenericNonlinearExpr{V}(op, a, b)
+    if op === :^ && y isa Real && y == 1
+        return _structured_result(_type(x), expr)
+    elseif op === :^ && y isa Real && y == 2
+        return _structured_result(
+            MA.promote_operation(*, _type(x), _type(x)),
+            expr,
+        )
+    elseif op === :+ || op === :- || op === :* || (op === :/ && y isa Real)
+        return _structured_result(
+            MA.promote_operation(f, _type(x), _type(y)),
+            expr,
+        )
+    end
+    return expr
+end
+
+for f in MOI.Nonlinear.DEFAULT_UNIVARIATE_OPERATORS
+    if f !== :+ && isdefined(Base, f)
+        @eval function Base.$f(x::_StructuredScalar)
+            return _structured_univariate($f, $(QuoteNode(f)), x)
+        end
+    end
+end
+
+for f in (:+, :-, :*, :/, :^, :atan, :min, :max)
+    op = QuoteNode(f)
+    @eval begin
+        function Base.$f(x::_StructuredScalar, y::Real)
+            return _structured_multivariate($f, $op, x, y)
+        end
+        function Base.$f(x::Real, y::_StructuredScalar)
+            return _structured_multivariate($f, $op, x, y)
+        end
+        function Base.$f(x::_StructuredScalar, y::JuMP.AbstractJuMPScalar)
+            return _structured_multivariate($f, $op, x, y)
+        end
+        function Base.$f(x::JuMP.AbstractJuMPScalar, y::_StructuredScalar)
+            return _structured_multivariate($f, $op, x, y)
+        end
+        function Base.$f(x::_StructuredScalar, y::_StructuredScalar)
+            return _structured_multivariate($f, $op, x, y)
+        end
+        function Base.$f(x::_ScalarWithIterator, y::_StructuredScalar)
+            return _multivariate($f, $op, x, y)
+        end
+        function Base.$f(x::_StructuredScalar, y::_ScalarWithIterator)
+            return _multivariate($f, $op, x, y)
+        end
+    end
+end
+
+_structured_variable_ref_type(::Type{<:Real}) = nothing
+_structured_variable_ref_type(::Type{<:_AnyLazySum{<:Real}}) = nothing
+_structured_variable_ref_type(::Type{<:PolynomialExpr{<:Real}}) = nothing
+function _structured_variable_ref_type(
+    ::Type{X},
+) where {X<:JuMP.AbstractJuMPScalar}
+    return JuMP.variable_ref_type(X)
+end
+
+Base.:^(::Irrational{:ℯ}, y::_StructuredScalar) = exp(y)
+
+function _structured_promote(f, ::Type{X}, ::Type{Y}) where {X,Y}
+    V = something(
+        _structured_variable_ref_type(X),
+        _structured_variable_ref_type(Y),
+        JuMP.VariableRef,
+    )
+    E = MA.promote_operation(f, _type(X), _type(Y))
+    return _polynomial_target_type(E, V) === nothing ?
+           JuMP.GenericNonlinearExpr{V} : PolynomialExpr{E,V}
+end
+
+for op in (+, -, *)
+    @eval begin
+        function MA.promote_operation(
+            ::typeof($op),
+            ::Type{X},
+            ::Type{Y},
+        ) where {X<:_StructuredScalar,Y<:Union{Real,JuMP.AbstractJuMPScalar}}
+            return _structured_promote($op, X, Y)
+        end
+        function MA.promote_operation(
+            ::typeof($op),
+            ::Type{X},
+            ::Type{Y},
+        ) where {X<:Union{Real,JuMP.AbstractJuMPScalar},Y<:_StructuredScalar}
+            return _structured_promote($op, X, Y)
+        end
+        function MA.promote_operation(
+            ::typeof($op),
+            ::Type{X},
+            ::Type{Y},
+        ) where {X<:_StructuredScalar,Y<:_StructuredScalar}
+            return _structured_promote($op, X, Y)
+        end
+        function MA.promote_operation(
+            ::typeof($op),
+            ::Type{<:_StructuredScalar},
+            ::Type{JuMP.GenericNonlinearExpr{V}},
+        ) where {V<:JuMP.AbstractVariableRef}
+            return JuMP.GenericNonlinearExpr{V}
+        end
+        function MA.promote_operation(
+            ::typeof($op),
+            ::Type{JuMP.GenericNonlinearExpr{V}},
+            ::Type{<:_StructuredScalar},
+        ) where {V<:JuMP.AbstractVariableRef}
+            return JuMP.GenericNonlinearExpr{V}
+        end
+    end
 end
 
 # From the code:

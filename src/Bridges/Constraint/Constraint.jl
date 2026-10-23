@@ -4,3 +4,4 @@
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
 include("function_generator.jl")
+include("polynomial_function.jl")

@@ -4,3 +4,4 @@
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
 include("Constraint/Constraint.jl")
+include("polynomial_function.jl")
