@@ -17,6 +17,13 @@ struct PolynomialFunction{
     func::MOI.ScalarNonlinearFunction
 end
 
+function MOI.Utilities.value_type(
+    ::Type{T},
+    ::Type{PolynomialFunction{F}},
+) where {T,F}
+    return MOI.Utilities.value_type(T, F)
+end
+
 function Base.copy(f::PolynomialFunction{F}) where {F}
     return PolynomialFunction{F}(copy(f.func))
 end
