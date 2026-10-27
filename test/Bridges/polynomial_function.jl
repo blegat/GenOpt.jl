@@ -209,6 +209,21 @@ function test_highs_polynomial_support()
     return
 end
 
+function test_highs_lazy_sum_constraint_dual()
+    model = JuMP.Model(HiGHS.Optimizer)
+    JuMP.set_silent(model)
+    JuMP.add_bridge(model, GenOpt.PolynomialFunctionBridge)
+    JuMP.@variable(model, x[1:3] >= 0)
+    affine = GenOpt.lazy_sum(x[i] + 1 for i in 1:3)
+    constraint = JuMP.@constraint(model, affine <= 5)
+    JuMP.@objective(model, Max, 3 * sum(x))
+    JuMP.optimize!(model)
+    @test JuMP.termination_status(model) == MOI.OPTIMAL
+    @test JuMP.has_duals(model)
+    @test JuMP.dual(constraint) ≈ -3.0
+    return
+end
+
 function test_highs_lazy_sum_objectives_and_constraints()
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)

@@ -554,6 +554,13 @@ function test_polynomial_scalar_arithmetic()
 end
 
 function test_polynomial_function_utilities()
+    for C in (Float32, Float64),
+        T in (Float32, Float64),
+        F in (MOI.ScalarAffineFunction{C}, MOI.ScalarQuadraticFunction{C})
+
+        V = @inferred MOI.Utilities.value_type(T, GenOpt.PolynomialFunction{F})
+        @test V === promote_type(C, T)
+    end
     x = MOI.VariableIndex(1)
     f = GenOpt.PolynomialFunction{MOI.ScalarAffineFunction{Float64}}(
         MOI.ScalarNonlinearFunction(:+, Any[x, 2.0]),
