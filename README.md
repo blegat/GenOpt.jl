@@ -103,9 +103,9 @@ warmed runs was:
 These measurements cover one constraint family at a time. The
 [raw samples](benchmark/results/2026-10-31/expansion.csv) include GC time;
 [metadata](benchmark/results/2026-10-31/metadata.json) records the environment.
-[Complete-model JuMPy comparisons](benchmark/results/2026-10-31/complete-models.csv)
-use the warmed native runtime with the updated expansion code loaded; the
-metadata describes that setup and its compilation limits.
+[JuMPy model comparisons](benchmark/results/2026-10-31/complete-models.csv)
+use a rebuilt JuliaC library. Timings exclude compilation and warmup;
+the metadata records the build and validation setup.
 
 ## Solve with ExaModels
 
