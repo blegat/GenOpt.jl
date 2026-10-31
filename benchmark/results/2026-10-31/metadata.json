@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-31",
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700K",
+  "os": "Linux-7.2.8-9-omarchy-x86_64-with-glibc2.44",
+  "julia": "1.13.3",
+  "mathoptinterface": "1.54.0",
+  "genopt_base": "d37f9e8",
+  "genopt_branch": "bl/batch-expansion",
+  "threads": 1,
+  "samples_per_configuration": 3,
+  "expansion_command": "JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 julia --startup-file=no --project=test benchmark/generator_expansion.jl",
+  "expansion_scope": "Constraint-family construction in MOI.Utilities.Model{Float64}, warmed, alternating scalar and prepared paths; includes model storage and excludes solving.",
+  "native_jumpy_scope": "Complete Facility and LQCP model construction in the paper benchmark MOI storage. Existing JuliaC --trim=no image with current GenOpt expansion code loaded into the runtime and constraint-group calls using Base.invokelatest. Warm-up and compilation excluded.",
+  "native_jumpy_revision": "213f79c",
+  "native_genopt_compatibility": "The JuMPy benchmark image uses the earlier GenOpt 0.2.3 compiler-compatibility source. Only batch_expansion.jl and add_constraints dispatch were overlaid; GenOpt main 0.2.4 changed IteratorValues representation.",
+  "compiled_validation": "GenOpt test/JuliaC/MyApp, JuliaC 0.3.12, --trim=unsafe-warn, executable assertions pass. The full untrimmed JuMPy image rebuild exceeded temporary disk quota; complete-model measurements use the existing runtime as described above.",
+  "baseline_samples": "JuMPy/benchmarks/paper/results/storage-2026-10-31/samples.jsonl, largest sizes, same machine and date. Retained here in complete-models.csv.",
+  "native_jumpy_command": "benchmarks/paper/run_jumpy.py equivalent model builders, facility=100 and lqcp=2000, three samples each, small warm-up=5; runtime overlay described above."
+}

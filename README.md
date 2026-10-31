@@ -70,6 +70,43 @@ Polynomial lowering currently requires filters to refer only to the iterators
 bound by their sum. A filter depending on an enclosing generator raises an
 explicit error.
 
+Affine and quadratic constraint families are prepared once before their rows
+are expanded. GenOpt resolves coefficient and index columns, then fills
+independent scalar functions using typed loops. Functions are processed in
+blocks of 65,536 rows to bound temporary function storage. Forms that cannot
+be prepared use the scalar expansion path. Preparation supports common
+arithmetic, literal unit and square powers, and dense arrays with up to two
+dimensions. Other nonlinear numeric expressions keep MOI's scalar evaluation
+semantics.
+
+To compare the two expansion paths on the facility coordinate constraints and
+the LQCP PDE constraints from the JuMP paper benchmarks, run:
+
+```sh
+julia --startup-file=no --project=test benchmark/generator_expansion.jl
+```
+
+The script warms both paths, alternates three samples, and prints construction
+time, GC time, and allocated bytes as CSV. It uses the same MOI storage for
+both paths and does not solve the models. Typed columns use additional
+temporary memory; the output functions and term vectors remain independent
+for every row.
+
+On an Intel i7-12700K with Julia 1.13.3 and one thread, the median of three
+warmed runs was:
+
+| Constraint family | Rows | Scalar | Prepared | Allocated bytes, scalar → prepared |
+| --- | ---: | ---: | ---: | ---: |
+| Facility coordinates, n = 100 | 1,020,100 | 6.58 s | 0.208 s | 11.60 GB → 0.53 GB |
+| LQCP PDE, n = 2000 | 3,998,000 | 5.62 s | 1.82 s | 4.20 GB → 3.01 GB |
+
+These measurements cover one constraint family at a time. The
+[raw samples](benchmark/results/2026-10-31/expansion.csv) include GC time;
+[metadata](benchmark/results/2026-10-31/metadata.json) records the environment.
+[Complete-model JuMPy comparisons](benchmark/results/2026-10-31/complete-models.csv)
+use the warmed native runtime with the updated expansion code loaded; the
+metadata describes that setup and its compilation limits.
+
 ## Solve with ExaModels
 
 Install ExaModels and a solver such as MadNLP:

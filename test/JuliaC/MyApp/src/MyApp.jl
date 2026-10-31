@@ -122,7 +122,8 @@ function check_wrapped_iterator()
     block = GenOpt.ContiguousArrayOfVariables(0, (3,))
     # JuMP prepares iterator values as tuples and indexes into those tuples.
     i = snf(:getindex, GenOpt.IteratorIndex(1), 1)
-    expr = snf(:-, snf(:getindex, block, snf(:+, i, 1)), 2.0)
+    # Promote mixed integer and floating-point columns before an n-ary sum.
+    expr = snf(:-, snf(:getindex, block, snf(:+, i, snf(:*, 0.0, i), 1)), 2.0)
     iterators = GenOpt.Iterator[GenOpt.Iterator([(1,), (2,)])]
     result = bridge(
         model,
