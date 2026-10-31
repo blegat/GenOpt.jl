@@ -43,6 +43,18 @@ function add_constraints(
     func::FunctionGenerator{F},
     scalar_set::S,
 ) where {F,S<:MOI.AbstractScalarSet}
+    constraints = _try_batch_constraints(model, func, scalar_set)
+    if constraints !== nothing
+        return constraints
+    end
+    return _add_constraints_scalar(model, func, scalar_set)
+end
+
+function _add_constraints_scalar(
+    model::MOI.ModelLike,
+    func::FunctionGenerator{F},
+    scalar_set::S,
+) where {F,S<:MOI.AbstractScalarSet}
     sizes = length.(func.iterators)
     constraints = Vector{MOI.ConstraintIndex{F,S}}(undef, prod(sizes))
     nit = length(func.iterators)

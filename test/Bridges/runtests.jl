@@ -4,5 +4,6 @@
 # in the LICENSE.md file or at https://opensource.org/licenses/MIT.
 
 include("Constraint/function_generator.jl")
+include("Constraint/batch_expansion.jl")
 include("polynomial_builder.jl")
 include("polynomial_function.jl")

@@ -70,6 +70,15 @@ Polynomial lowering currently requires filters to refer only to the iterators
 bound by their sum. A filter depending on an enclosing generator raises an
 explicit error.
 
+Affine and quadratic constraint families are prepared once before their rows
+are expanded. GenOpt resolves coefficient and index columns, then fills
+independent scalar functions using typed loops. Functions are processed in
+blocks of 65,536 rows to bound temporary function storage. Forms that cannot
+be prepared use the scalar expansion path. Preparation supports common
+arithmetic, literal unit and square powers, and dense arrays with up to two
+dimensions. Other nonlinear numeric expressions keep MOI's scalar evaluation
+semantics.
+
 ## Solve with ExaModels
 
 Install ExaModels and a solver such as MadNLP:
