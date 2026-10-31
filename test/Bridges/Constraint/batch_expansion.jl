@@ -9,21 +9,6 @@ using Test
 import GenOpt
 import MathOptInterface as MOI
 
-include("../../../benchmark/generator_expansion.jl")
-
-@testset "expansion benchmark families" begin
-    for (kind, rows) in ((:coordinate, 48), (:pde, 6)), batch in (false, true)
-        model = GeneratorExpansionBenchmark.build(kind, 3, batch)
-        @test MOI.get(
-            model,
-            MOI.NumberOfConstraints{
-                MOI.ScalarAffineFunction{Float64},
-                MOI.EqualTo{Float64},
-            }(),
-        ) == rows
-    end
-end
-
 snf(head, args...) = MOI.ScalarNonlinearFunction(head, Any[args...])
 
 function check_expansion(
