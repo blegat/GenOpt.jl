@@ -481,4 +481,92 @@ end
     end
 end
 
+@testset "coefficient conversions and numeric constant folding" begin
+    x, index = MOI.VariableIndex(1), GenOpt.IteratorIndex(1)
+    for T in (Float32, Float64, BigFloat)
+        F = MOI.ScalarAffineFunction{T}
+        for constant in (3.25, 3.25f0, big"3.25", 13 // 4)
+            check_expansion(F, snf(:+, x, constant), GenOpt.Iterator[])
+        end
+        for expr in (snf(:-, 3.0, 1.0), snf(:/, 3.0, 2.0), snf(:^, 3.0, 2))
+            check_expansion(F, snf(:+, x, expr), GenOpt.Iterator[])
+        end
+        check_expansion(
+            F,
+            snf(:*, index, x),
+            [GenOpt.Iterator(BigFloat[1.25, 2.5])],
+        )
+    end
+end
+
+@testset "column conversion and incompatible row counts" begin
+    values = [1, 2, 3]
+    converted = GenOpt._batch_convert(Float64, view(values, 2:3))
+    @test converted isa Vector{Float64}
+    @test converted == [2.0, 3.0]
+    @test GenOpt._batch_binary_values(Float64, :+, Ref(2.0), [1.0, 2.0]) ==
+          [3.0, 4.0]
+    @test_throws DimensionMismatch GenOpt._batch_binary_values(
+        Float64,
+        :+,
+        [1.0, 2.0],
+        [1.0, 2.0, 3.0],
+    )
+    @test GenOpt._batch_iszero(Ref(0))
+    @test !GenOpt._batch_iszero(Ref(1))
+    @test !GenOpt._batch_iszero([0.0, 0.0])
+end
+
+@testset "unsupported numeric data and collections preserve scalar behavior" begin
+    F = MOI.ScalarAffineFunction{Float64}
+    x, index = MOI.VariableIndex(1), GenOpt.IteratorIndex(1)
+    integers = [GenOpt.Iterator([1, 2])]
+    for (expr, iterators) in (
+        (snf(:*, index, x), [GenOpt.Iterator([1 // 2, 3 // 2])]),
+        (
+            snf(:*, snf(:getindex, index, 1), x),
+            [GenOpt.Iterator([(Float16(0.5),), (Float16(1.5),)])],
+        ),
+        (snf(:*, snf(:getindex, (2.0, 3.0), index), x), integers),
+        (snf(:+, x, snf(:+, index, 1 // 2)), integers),
+        (snf(:+, x, snf(:-, 1 // 2)), GenOpt.Iterator[]),
+        (snf(:+, x, snf(:+, index, 1 // 2, 1)), integers),
+    )
+        check_expansion(F, expr, iterators; fast = false)
+    end
+end
+
+@testset "invalid polynomial shapes leave the model unchanged" begin
+    F = MOI.ScalarAffineFunction{Float64}
+    model = MOI.Utilities.Model{Float64}()
+    x = MOI.add_variable(model)
+    invalid_minus =
+        GenOpt.FunctionGenerator{F}(snf(:-, x, 1, 2), GenOpt.Iterator[])
+    @test GenOpt._try_batch_constraints(
+        model,
+        invalid_minus,
+        MOI.EqualTo(0.0),
+    ) === nothing
+    @test_throws r"Unexpected arity 3" GenOpt.add_constraints(
+        model,
+        invalid_minus,
+        MOI.EqualTo(0.0),
+    )
+    variable_denominator = GenOpt.FunctionGenerator{F}(
+        snf(:/, x, snf(:+, x, 1)),
+        GenOpt.Iterator[],
+    )
+    @test GenOpt._try_batch_constraints(
+        model,
+        variable_denominator,
+        MOI.EqualTo(0.0),
+    ) === nothing
+    @test_throws InexactError GenOpt.add_constraints(
+        model,
+        variable_denominator,
+        MOI.EqualTo(0.0),
+    )
+    @test MOI.get(model, MOI.NumberOfConstraints{F,MOI.EqualTo{Float64}}()) == 0
+end
+
 end

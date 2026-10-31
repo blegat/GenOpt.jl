@@ -502,7 +502,7 @@ end
 macro _batch_lookup_array(T)
     collection, indices = esc(:collection), esc(:indices)
     T = esc(T)
-    return quote
+    code = quote
         if $collection isa Vector{$T} && length($indices) == 1
             return _batch_lookup_one($T, $collection, $indices[1])
         elseif $collection isa Matrix{$T} && length($indices) == 2
@@ -511,6 +511,9 @@ macro _batch_lookup_array(T)
             return Ref(getindex($collection))
         end
     end
+    # Attribute the generated checks to their invocation, including in coverage.
+    Base.remove_linenums!(code)
+    return Expr(:block, __source__, code)
 end
 Base.@nospecializeinfer function _batch_lookup(
     @nospecialize(collection),
