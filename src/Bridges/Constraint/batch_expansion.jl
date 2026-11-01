@@ -963,17 +963,18 @@ function _batch_add_constraints(
                 offset,
             )
         end
+        sets = Vector{S}(undef, count)
         for row in eachindex(functions)
             # Each function is fresh and owned by this batch, so normalization
             # can remove its constant without copying all its term vectors.
-            constraints[row+offset] =
-                MOI.Utilities.normalize_and_add_constraint(
-                    model,
-                    functions[row],
-                    set;
-                    allow_modify_function = true,
-                )
+            functions[row], sets[row] = MOI.Utilities.normalize_constant(
+                functions[row],
+                set;
+                allow_modify_function = true,
+            )
         end
+        indices = MOI.add_constraints(model, functions, sets)
+        copyto!(constraints, first_row, indices, 1, count)
     end
     return constraints
 end
