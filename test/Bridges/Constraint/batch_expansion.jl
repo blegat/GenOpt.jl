@@ -73,7 +73,6 @@ end
 @testset "HiGHS solves and deletes normalized generated rows" begin
     model = HiGHS.Optimizer()
     MOI.set(model, MOI.Silent(), true)
-    MOI.set(model, MOI.NumberOfThreads(), 1)
     x = MOI.add_variable(model)
     generator = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
         snf(:-, x, GenOpt.IteratorIndex(1)),
