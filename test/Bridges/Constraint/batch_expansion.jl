@@ -7,9 +7,95 @@ module TestBatchExpansion
 
 using Test
 import GenOpt
+import HiGHS
 import MathOptInterface as MOI
 
 snf(head, args...) = MOI.ScalarNonlinearFunction(head, Any[args...])
+
+struct BatchOnlyModel{T} <: MOI.ModelLike
+    inner::MOI.Utilities.Model{T}
+    batch_sizes::Vector{Int}
+end
+
+function MOI.add_constraints(
+    model::BatchOnlyModel,
+    functions::Vector{F},
+    sets::Vector{S},
+) where {F,S}
+    @test length(functions) == length(sets)
+    @test all(iszero(f.constant) for f in functions)
+    push!(model.batch_sizes, length(functions))
+    return MOI.add_constraints(model.inner, functions, sets)
+end
+
+@testset "batch-only backends receive normalized affine and quadratic rows" begin
+    for F in (
+            MOI.ScalarAffineFunction{Float64},
+            MOI.ScalarQuadraticFunction{Float64},
+        ),
+        set in (
+            MOI.EqualTo(3.0),
+            MOI.LessThan(3.0),
+            MOI.GreaterThan(3.0),
+            MOI.Interval(1.0, 3.0),
+        )
+
+        inner = MOI.Utilities.Model{Float64}()
+        x = MOI.add_variable(inner)
+        model = BatchOnlyModel(inner, Int[])
+        i = GenOpt.IteratorIndex(1)
+        term = F <: MOI.ScalarAffineFunction ? x : snf(:^, x, 2)
+        generator = GenOpt.FunctionGenerator{F}(
+            snf(:+, term, i),
+            [GenOpt.Iterator([1, 2, 3])],
+        )
+        indices = @inferred GenOpt.add_constraints(model, generator, set)
+        @test model.batch_sizes == [3]
+        @test length(indices) == 3
+        expected = if F <: MOI.ScalarAffineFunction
+            MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(1.0, x)], 0.0)
+        else
+            MOI.ScalarQuadraticFunction(
+                [MOI.ScalarQuadraticTerm(2.0, x, x)],
+                MOI.ScalarAffineTerm{Float64}[],
+                0.0,
+            )
+        end
+        for (row, index) in enumerate(indices)
+            function_ = MOI.get(inner, MOI.ConstraintFunction(), index)
+            @test function_ ≈ expected
+            @test MOI.get(inner, MOI.ConstraintSet(), index) ==
+                  MOI.Utilities.shift_constant(set, -Float64(row))
+        end
+    end
+end
+
+@testset "HiGHS solves and deletes normalized generated rows" begin
+    model = HiGHS.Optimizer()
+    MOI.set(model, MOI.Silent(), true)
+    x = MOI.add_variable(model)
+    generator = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
+        snf(:-, x, GenOpt.IteratorIndex(1)),
+        [GenOpt.Iterator([1, 2, 3])],
+    )
+    indices = GenOpt.add_constraints(model, generator, MOI.GreaterThan(0.0))
+    objective = MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(1.0, x)], 0.0)
+    MOI.set(model, MOI.ObjectiveSense(), MOI.MIN_SENSE)
+    MOI.set(model, MOI.ObjectiveFunction{typeof(objective)}(), objective)
+    MOI.optimize!(model)
+    @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMAL
+    @test MOI.get(model, MOI.ObjectiveValue()) ≈ 3.0
+    for (row, index) in enumerate(indices)
+        @test MOI.get(model, MOI.ConstraintFunction(), index) ≈ objective
+        @test MOI.get(model, MOI.ConstraintSet(), index) ==
+              MOI.GreaterThan(Float64(row))
+    end
+    MOI.delete(model, indices[3])
+    MOI.optimize!(model)
+    @test !MOI.is_valid(model, indices[3])
+    @test MOI.get(model, MOI.TerminationStatus()) == MOI.OPTIMAL
+    @test MOI.get(model, MOI.ObjectiveValue()) ≈ 2.0
+end
 
 function check_expansion(
     ::Type{F},
@@ -338,8 +424,9 @@ end
 
 @testset "batch boundaries preserve row offsets" begin
     rows = GenOpt._BATCH_ROWS + 3
-    model = MOI.Utilities.Model{Float64}()
-    x = MOI.add_variable(model)
+    inner = MOI.Utilities.Model{Float64}()
+    x = MOI.add_variable(inner)
+    model = BatchOnlyModel(inner, Int[])
     index = GenOpt.IteratorIndex(1)
     template = snf(:-, snf(:*, index, x), index)
     generator = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
@@ -347,12 +434,13 @@ end
         [GenOpt.Iterator(collect(1:rows))],
     )
     indices = GenOpt.add_constraints(model, generator, MOI.EqualTo(0.0))
+    @test model.batch_sizes == [GenOpt._BATCH_ROWS, 3]
     @test length(indices) == rows
     for row in (1, GenOpt._BATCH_ROWS, GenOpt._BATCH_ROWS + 1, rows)
-        func = MOI.get(model, MOI.ConstraintFunction(), indices[row])
+        func = MOI.get(inner, MOI.ConstraintFunction(), indices[row])
         @test only(func.terms).coefficient == row
         @test only(func.terms).variable == x
-        @test MOI.get(model, MOI.ConstraintSet(), indices[row]).value == row
+        @test MOI.get(inner, MOI.ConstraintSet(), indices[row]).value == row
     end
 end
 
