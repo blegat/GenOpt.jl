@@ -45,11 +45,79 @@ function _test_template(et, values)
     end
 end
 
+function test_iterator_value_type_inference()
+    for values in ([1, 2], [1.0, 2.0], Int[], Float64[])
+        T = eltype(values)
+        i = GenOpt.iterator(values)
+        @test i isa GenOpt.IteratorValues{T}
+        @test (@inferred GenOpt._type(i)) === T
+        @test (@inferred GenOpt.prepare(i)) isa JuMP.NonlinearExpr
+        expression = @inferred i + one(T)
+        @test expression isa GenOpt.ExprTemplate{T}
+        @test GenOpt._variable_ref_type(expression) === nothing
+    end
+    return
+end
+
 function test_variable_vect()
     model = JuMP.Model()
     JuMP.@variable(model, x[1:3])
     i = GenOpt.iterator([3, 1])
     _test_template(x[i], GenOpt._getindex_expr.(Ref(x), [3, 1]))
+    return
+end
+
+function test_reindex_nested_numeric_placeholder()
+    model = JuMP.GenericModel{Float32}()
+    JuMP.@variable(model, x)
+    V = typeof(x)
+    numeric = JuMP.GenericNonlinearExpr{JuMP.VariableRef}(
+        :+,
+        GenOpt.IteratorIndex(1),
+        2,
+    )
+    expression = JuMP.GenericNonlinearExpr{V}(:*, x, numeric)
+    indexed = @inferred GenOpt._reindex(expression, [2])
+    @test indexed isa JuMP.GenericNonlinearExpr{V}
+    @test indexed.args[1] === x
+    @test indexed.args[2] isa JuMP.GenericNonlinearExpr{V}
+    @test indexed.args[2].args[1].value == 2
+    @test numeric.args[1].value == 1
+    @test expression.args[2] === numeric
+    return
+end
+
+function test_iterative_iterator_index_traversal()
+    expression = JuMP.NonlinearExpr(
+        :+,
+        GenOpt.IteratorIndex(2),
+        JuMP.NonlinearExpr(:*, GenOpt.IteratorIndex(1), 3),
+        GenOpt.IteratorIndex(2),
+    )
+    for _ in 1:10_000
+        expression = JuMP.NonlinearExpr(:-, expression)
+    end
+    indices =
+        @inferred GenOpt._push_indices!(GenOpt.IteratorIndex[], expression)
+    @test getfield.(indices, :value) == [2, 1, 2]
+    indexed = @inferred GenOpt._reindex(expression, [3, 4])
+    indices = GenOpt._push_indices!(GenOpt.IteratorIndex[], indexed)
+    @test getfield.(indices, :value) == [4, 3, 4]
+    return
+end
+
+function test_symbolic_exponent_type_inference()
+    model = JuMP.Model()
+    JuMP.@variable(model, x[1:2])
+    i = GenOpt.iterator([1, 2])
+    for base in (x[1], x[i], x[i] + 1, x[i]^2)
+        expression = @inferred base^i
+        @test expression isa GenOpt.ExprTemplate{JuMP.NonlinearExpr}
+        @test expression.expr.head == :^
+    end
+    @test (x[i]^1) isa GenOpt.ExprTemplate{JuMP.VariableRef}
+    @test (x[i]^2) isa GenOpt.ExprTemplate{JuMP.QuadExpr}
+    @test (i^2) isa GenOpt.ExprTemplate{Int}
     return
 end
 
