@@ -125,7 +125,7 @@ struct _BatchKernelColumn{T}
 end
 Base.@nospecializeinfer function _batch_kernel_column(
     ::Type{T},
-    @nospecialize(value),
+    @nospecialize(value)
 )::_BatchKernelColumn{T} where {T}
     if value isa Base.RefValue{T}
         return _BatchKernelColumn(T[value[]], 0, 0)
@@ -146,7 +146,7 @@ end
 
 Base.@nospecializeinfer function _batch_convert(
     ::Type{T},
-    @nospecialize(value),
+    @nospecialize(value)
 )::Union{Base.RefValue{T},Vector{T},_BatchAxis{T}} where {T}
     if value isa Base.RefValue{T}
         return value
@@ -258,7 +258,7 @@ Base.@nospecializeinfer function _batch_binary_values(
     ::Type{T},
     op::Symbol,
     @nospecialize(a),
-    @nospecialize(b),
+    @nospecialize(b)
 )::Union{Base.RefValue{T},Vector{T}} where {T}
     aa, bb = _batch_convert(T, a), _batch_convert(T, b)
     rows_a, rows_b = _batch_rows(T, aa), _batch_rows(T, bb)
@@ -304,7 +304,7 @@ end
 Base.@nospecializeinfer function _batch_unary_values(
     ::Type{T},
     op::Symbol,
-    @nospecialize(value),
+    @nospecialize(value)
 )::Union{Base.RefValue{T},Vector{T}} where {T}
     converted = _batch_convert(T, value)
     rows = _batch_rows(T, converted)
@@ -449,7 +449,7 @@ end
 Base.@nospecializeinfer function _batch_lookup_one(
     ::Type{T},
     collection::C,
-    @nospecialize(index),
+    @nospecialize(index)
 )::Union{Base.RefValue{T},Vector{T}} where {T,C}
     converted = _batch_convert(Int, index)
     column = _batch_kernel_column(Int, converted)
@@ -475,7 +475,7 @@ Base.@nospecializeinfer function _batch_lookup_two(
     ::Type{T},
     collection::C,
     @nospecialize(first),
-    @nospecialize(second),
+    @nospecialize(second)
 )::Union{Base.RefValue{T},Vector{T}} where {T,C}
     aa, bb = _batch_convert(Int, first), _batch_convert(Int, second)
     rows = max(_batch_rows(Int, aa), _batch_rows(Int, bb))
