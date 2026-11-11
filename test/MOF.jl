@@ -68,6 +68,33 @@ function test_function_generator_round_trip()
     return
 end
 
+function test_variable_array_round_trip()
+    source = MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}())
+    x = MOI.add_variables(source, 3)
+    for (i, xi) in enumerate(x)
+        MOI.set(source, MOI.VariableName(), xi, "x[$i]")
+    end
+    # The variables of the template need not be contiguous.
+    template = MOI.ScalarNonlinearFunction(
+        :getindex,
+        Any[[x[3], x[1]], GenOpt.IteratorIndex(1)],
+    )
+    generator = GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}(
+        template,
+        [GenOpt.Iterator(1:2)],
+    )
+    MOI.add_constraint(source, generator, MOI.Nonnegatives(2))
+    text, destination = _round_trip(source)
+    @test occursin("GenOptVariableArray", text)
+    F = typeof(generator)
+    cis =
+        MOI.get(destination, MOI.ListOfConstraintIndices{F,MOI.Nonnegatives}())
+    restored = MOI.get(destination, MOI.ConstraintFunction(), only(cis))
+    @test restored.func.args[1] == [x[3], x[1]]
+    @test isapprox(restored, generator)
+    return
+end
+
 function test_quadratic_nonlinear_and_explicit_iterators()
     source = MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}())
     x = MOI.add_variables(source, 3)

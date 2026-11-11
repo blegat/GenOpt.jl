@@ -64,6 +64,12 @@ function _encode_mof_template(array::ContiguousArrayOfVariables)
     )
 end
 
+# A vector of arbitrary variables, for instance when the variables of a model
+# are not contiguous.
+function _encode_mof_template(array::Vector{MOI.VariableIndex})
+    return MOI.ScalarNonlinearFunction(:GenOptVariableArray, Vector{Any}(array))
+end
+
 _encode_mof_template(x) = x
 
 function _mof_generator_to_object(
@@ -171,6 +177,8 @@ function _decode_mof_template(f::MOI.ScalarNonlinearFunction)
         return IteratorIndex(only(args))
     elseif f.head == :GenOptContiguousArrayOfVariables
         return ContiguousArrayOfVariables(args[1], Tuple(args[2:end]))
+    elseif f.head == :GenOptVariableArray
+        return MOI.VariableIndex[arg for arg in args]
     end
     return MOI.ScalarNonlinearFunction(f.head, args)
 end
