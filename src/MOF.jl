@@ -43,47 +43,41 @@ function _moi_function_type(name::String, ::Type{T}) where {T}
     return _moi_function_type(Val(Symbol(name)), T)
 end
 
-# Encode GenOpt leaves as nonlinear operator nodes. This reuses MOF's nonlinear
-# DAG writer and reader, followed by a small decoding pass.
-function _MOF._convert_nonlinear_to_mof(
-    index::IteratorIndex,
-    node_list::Vector{Any},
-    name_map::Dict{MOI.VariableIndex,String},
-)
-    return _MOF._convert_nonlinear_to_mof(
-        MOI.ScalarNonlinearFunction(:GenOptIteratorIndex, Any[index.value]),
-        node_list,
-        name_map,
+# Encode GenOpt leaves as nonlinear operator nodes, so that the template is an
+# ordinary ScalarNonlinearFunction for MOF's writer and reader. Decoding is done
+# by `_decode_mof_template`.
+function _encode_mof_template(f::MOI.ScalarNonlinearFunction)
+    return MOI.ScalarNonlinearFunction(
+        f.head,
+        Any[_encode_mof_template(arg) for arg in f.args],
     )
 end
 
-function _MOF._convert_nonlinear_to_mof(
-    array::ContiguousArrayOfVariables,
-    node_list::Vector{Any},
-    name_map::Dict{MOI.VariableIndex,String},
-)
-    return _MOF._convert_nonlinear_to_mof(
-        MOI.ScalarNonlinearFunction(
-            :GenOptContiguousArrayOfVariables,
-            Any[array.offset, array.size...],
-        ),
-        node_list,
-        name_map,
+function _encode_mof_template(index::IteratorIndex)
+    return MOI.ScalarNonlinearFunction(:GenOptIteratorIndex, Any[index.value])
+end
+
+function _encode_mof_template(array::ContiguousArrayOfVariables)
+    return MOI.ScalarNonlinearFunction(
+        :GenOptContiguousArrayOfVariables,
+        Any[array.offset, array.size...],
     )
 end
+
+_encode_mof_template(x) = x
 
 function _mof_generator_to_object(
     generator::Union{FunctionGenerator{F},SumGenerator{F}},
     type::String,
     name_map::Dict{MOI.VariableIndex,String},
 ) where {F}
-    node_list = Any[]
-    root = _MOF._convert_nonlinear_to_mof(generator.func, node_list, name_map)
+    template =
+        _MOF.moi_to_object(_encode_mof_template(generator.func), name_map)
     return (
         type = type,
         function_type = _mof_function_type(F),
-        root = root,
-        node_list = node_list,
+        root = template.root,
+        node_list = template.node_list,
         iterators = _mof_iterator_to_object.(generator.iterators),
     )
 end
@@ -188,12 +182,9 @@ function _generator_from_mof(
     object::Dict,
     name_map::Dict{String,MOI.VariableIndex},
 ) where {T}
-    template = _MOF._parse_scalar_nonlinear_function(
-        T,
-        object["root"],
-        object["node_list"],
-        name_map,
-    )
+    # `object` has the `root` and `node_list` of the encoded template.
+    template =
+        _MOF.function_to_moi(Val(:ScalarNonlinearFunction), T, object, name_map)
     F = _moi_function_type(object["function_type"], T)
     iterators = Iterator[_mof_iterator_to_moi(it) for it in object["iterators"]]
     return F, _decode_mof_template(template), iterators
