@@ -109,7 +109,8 @@ end
 function _mof_iterator_value_to_object(value::Tuple)
     return (
         type = "GenOptTuple",
-        values = _mof_iterator_value_to_object.(value),
+        # A vector, as JSON writes it, rather than a tuple of any type
+        values = Any[_mof_iterator_value_to_object(v) for v in value],
     )
 end
 function _mof_iterator_value_to_object(value::Symbol)
