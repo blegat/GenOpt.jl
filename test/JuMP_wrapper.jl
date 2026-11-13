@@ -95,6 +95,11 @@ function test_extension_variable_arrays()
         i = GenOpt.iterator(1:2)
         template = array[i, 1]
         @test template isa GenOpt.ExprTemplate{V,V}
+        numeric = i + 1
+        for mixed in (numeric * template, template * numeric)
+            @test mixed isa GenOpt.ExprTemplate{JuMP.GenericAffExpr{T,V},V}
+            @test JuMP.variable_ref_type(mixed) === V
+        end
         generator = GenOpt.ExprGenerator(template)
         constraint =
             JuMP.build_constraint(error, generator, MOI.Nonnegatives(2))
@@ -124,6 +129,34 @@ function test_extension_variable_arrays()
         @test JuMP.index(only(references)) == index
         @test JuMP.owner_model(only(references)) === model
     end
+    return
+end
+
+function test_model_aware_generator_lowering()
+    # Released JuMP and its concrete-model development branch use different
+    # general model types. Exercise the same extension methods with both.
+    backend = MOI.Utilities.Model{Float64}()
+    model = if isdefined(JuMP, :concrete_direct_model)
+        JuMP.concrete_direct_model(backend)
+    else
+        JuMP.direct_model(backend)
+    end
+    JuMP.@variable(model, x[1:2])
+    i = GenOpt.iterator([1, 2])
+    index = GenOpt.IteratorIndex(1)
+    @test (@inferred JuMP.moi_function(model, index)) === index
+    iterator = GenOpt.IteratorInExpr(i.iterators, index)
+    @test (@inferred JuMP.moi_function(model, iterator)) === iterator
+    array = GenOpt.to_generator(x)
+    @test (@inferred JuMP.moi_function(model, array)) isa
+          GenOpt.ContiguousArrayOfVariables{1}
+    generator = GenOpt.ExprGenerator(x[i] + 1.0)
+    function_ = @inferred JuMP.moi_function(model, generator)
+    @test function_ isa
+          GenOpt.FunctionGenerator{MOI.ScalarAffineFunction{Float64}}
+    @test function_.iterators === generator.expr.iterators
+    data = GenOpt._DataArray([3.0, 4.0])
+    @test (@inferred JuMP.moi_function(model, data)) === data
     return
 end
 
@@ -162,9 +195,9 @@ function test_container()
     @test con_it_expr isa ExprGenerator
     con_expr = con_it_expr.expr.expr
     @test sprint(show, con_ref) ==
-          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0, $Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), $IteratorValues[iterator([:a, :b])])"
+          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0, $Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), $IteratorValues{Symbol}[iterator([:a, :b])])"
     @test sprint(show, MIME"text/latex"(), con_ref) ==
-          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0, $Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), $IteratorValues[iterator([:a, :b])])"
+          "$ParametrizedArray(((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0, $Iterator{Tuple{Symbol, Int64, Real}}(Tuple{Symbol, Int64, Real}[(:a, -1, π), (:b, 1, 0.0)]) ∈ MathOptInterface.Nonnegatives(2), $IteratorValues{Symbol}[iterator([:a, :b])])"
     @test sprint(show, con_expr) ==
           "((x + getindex($IteratorIndex(1), 2)) - getindex($IteratorIndex(1), 3)) - 0"
     @test sprint(show, MIME"text/latex"(), con_expr) ==
